@@ -8,3 +8,5 @@ langchain
 langchain-openai
 langchain-core
 langgraph
+mcp>=1.27,<2
+langchain-mcp-adapters
