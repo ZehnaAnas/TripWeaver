@@ -72,7 +72,7 @@ def  _only_airline_origin_destination(data):
 @mcp.tool()
 def get_all_flights() -> list[dict] | dict :
     """
-    Retrieve all flights with only id,price,departure time/arrival time, available seats airline, origin city, destination city and flight date.
+    Retrieve all flights with only id,price,departure time/arrival time, available seats, airline, origin city, destination city and flight date.
 
     """
 
