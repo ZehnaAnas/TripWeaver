@@ -58,12 +58,17 @@ def  _only_airline_origin_destination(data):
             "airline":flight.get("airline"),
             "originCity":flight.get("origin",{}).get("city"),
             "destinationCity":flight.get("destination",{}).get("city"),
-            "id":flight.get("_id"),
+            "destinationCountry":flight.get("destination",{}).get("country"),
+            "originCountry":flight.get("origin",{}).get("country"),
+            "originAirport":flight.get("origin",{}).get("airport"),
+            "destinationAirport":flight.get("destination",{}).get("airport"),
+            "flightId":flight.get("_id"),
             "price":flight.get("price"),
             "departureTime":flight.get("departureTime"),
             "arrivalTime":flight.get("arrivalTime"),
             "availableSeats":flight.get("availableSeats"),
-            "flightDate":flight.get("flightDate")
+            "flightDate":flight.get("flightDate"),
+            "flightNumber":flight.get("flightNumber")
         }
         for flight in flights
     ]
@@ -72,7 +77,8 @@ def  _only_airline_origin_destination(data):
 @mcp.tool()
 def get_all_flights() -> list[dict] | dict :
     """
-    Retrieve all flights with only id,price,departure time/arrival time, available seats, airline, origin city, destination city and flight date.
+    Retrieve all flights with only id,price,departure time/arrival time, available seats, airline ,origin airport,
+    origin city, origin country ,destination airport,destination city, destination country and flight date.
 
     """
 
@@ -82,22 +88,29 @@ def get_all_flights() -> list[dict] | dict :
 
 @mcp.tool()
 def search_flights(
-    origin:str,
-    destination:str,
-    date:Optional[str]=None
+    origin:Optional[str]=None,
+    destination:Optional[str]=None,
+    origin_country:Optional[str]=None,
+    destination_country:Optional[str]=None,
+    flight_date:Optional[str]=None,
+    flight_budget:Optional[int]=None,
+    departure_time:Optional[str]=None
 ) -> list[dict] |dict:
     """
-    Search flights by origin and destination.
-    Return only airline,origin city,destination city,flight id,price,departure time,arrival time, available seats and flight date.
-    Date is optional and when given it must match with the flight dates.
+    Search flights by only origin and/or destination. 
+    Search flights by using countries names is allowed too.
+    Return only flight id,airline,origin city,origin country,destination city, destination country,
+    ,price,departure time,arrival time, available seats and flight date.
+    Date is optional and it must match with the flight dates.
     """
-    params = {
-        "origin":origin,
-        "destination":destination,
-    }
-
-    if date:
-        params["date"] = date
+    params = {}
+    if origin: params["origin"] = origin
+    if destination: params["destination"] = destination
+    if origin_country:params["originCountry"] = origin_country
+    if destination_country:params["destinationCountry"] = destination_country
+    if flight_date: params["date"] = flight_date
+    if flight_budget: params["budget"] = flight_budget
+    if departure_time: params["departureTime"]= departure_time
 
     query_string = urllib.parse.urlencode(params)
     url = f"{BASE_URL}/flights/search?{query_string}"
@@ -108,19 +121,35 @@ def search_flights(
 
 @mcp.tool()
 def book_flight(
-    passenger_email:str,
-    passenger_name:str,
-    flight_id:str
+    passenger_emails:str,
+    passenger_names:str,
+    flying_type:str,
+    date_of_birth:str,
+    passport_number:str,
+    nationality:str,
+    flight_id:str,
+    airline:Optional[str],
 )->dict:
     """ 
-    Book a flight by it's flight ID.
-    Ensure it's ID must come from a prior search_flights or get_all_flights result, and never invent one.
-    Return only the booking confirmation.
+    Book a flight using a flight ID returned from a previous
+    search_flights() or get_all_flights() call.
+    The flight ID must never be invented by the AI.
+    Returns the booking confirmation from the external service.
     """
+    if not flight_id:
+        return {
+            "error": True,
+            "message": "A flight ID is required for booking."
+            }
     payload = {
         "flightId":flight_id,
-        "passengerName":passenger_name,
-        "passengerEmail":passenger_email,
+        "airline":airline,
+        "flyingType":flying_type,
+        "passengerNames":passenger_names,
+        "passengerEmails":passenger_emails,
+        "dateOfBirth":date_of_birth,
+        "passportNumber":passport_number,
+        "nationality":nationality,
     }
 
     url = f"{BASE_URL}/flights/book"

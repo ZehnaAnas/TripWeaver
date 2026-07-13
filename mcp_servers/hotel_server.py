@@ -43,6 +43,14 @@ def _post_json(url:str, payload:dict):
                 "url":url}
     
 def _hotel_details(data):
+    """
+    Convert full hotel response into only:
+    hotel id, hotel name, description, facilities, available rooms,price ,address,city,star rating.
+
+    Support both:
+    1. {"hotels":[...]}
+    2. [...]
+    """
     if isinstance(data,dict) and "hotels" in data:
         hotels = data["hotels"]
     elif isinstance(data,list):
@@ -54,13 +62,14 @@ def _hotel_details(data):
         {
         "hotelID":hotel.get("_id"),
         "address":hotel.get("address"),
-        "facilities":hotel.get("amenities"),
+        "amenities":hotel.get("amenities"),
         "availableRooms":hotel.get("availableRooms"),
         "city":hotel.get("city"),
         "description":hotel.get("description"),
         "pricePerNight":hotel.get("pricePerNight"),
         "name":hotel.get("name"),
-        "starRating":hotel.get("starRating")
+        "starRating":hotel.get("starRating"),
+        "cityCode" :hotel.get("airportCode")
     }
     for hotel in hotels
     ]
@@ -68,7 +77,7 @@ def _hotel_details(data):
 @mcp.tool()
 def list_all_hotels()-> list[dict] | dict:
     """
-    Return all the hotel information when the user asks to list all the hotels available
+    Retrieve all the hotels with only hotel id, name, description, facilities,price,available rooms, star rating, address and city
     """
     url = f"{BASE_URL}/hotels"
     data = _get_json(url)
@@ -76,34 +85,40 @@ def list_all_hotels()-> list[dict] | dict:
 
 @mcp.tool()
 def search_hotel(
-    city:str,
-    name:Optional[str] = None,
-    checkIn:Optional[str] = None,
-    checkOut:Optional[str] = None,
-    starRating:Optional[str] =  None,
-    amenities:Optional[str]=None,
-    budget:Optional[str] = None
+    city:Optional[str]= None,
+    city_code:Optional[str] = None,
+    hotel_name:Optional[str] = None,
+    check_in:Optional[str] = None,
+    check_out:Optional[str] = None,
+    star_rating:Optional[int] =  None,
+    hotel_budget:Optional[int] = None
 ) -> list[dict] | dict:
     """
-    Search hotels by using only city.
-    Return only the hotel id,hotel name, description, address, price per night , available rooms, amenities and star rating.
+    Search hotels using a city or airport code.
+    
+    Optional filters include hotel name, check-in/check-out dates,
+    star rating, and budget.
+    
+    Returns only the essential hotel information required for
+    recommendation or booking.
     """
     params = {
-        "city":city,
     }
-    
-    if name:
-        params["name"] = name
-    if checkIn:
-        params["checkIn"] = checkIn
-    if checkOut:
-        params["checkOut"] = checkOut
-    if starRating:
-        params["starRating"] = starRating
-    if amenities:
-        params["amenities"] = amenities
-    if budget:
-        params["budget"] = budget
+
+    if city:
+        params["city"] = city
+    if city_code:
+        params["cityCode"] = city_code
+    if hotel_name:
+        params["name"] = hotel_name
+    if check_in:
+        params["checkIn"] = check_in
+    if check_out:
+        params["checkOut"] = check_out
+    if star_rating:
+        params["starRating"] = star_rating
+    if hotel_budget:
+        params["budget"] = hotel_budget
 
     query_string = urllib.parse.urlencode(params)
     url = f"{BASE_URL}/hotels/search?{query_string}"
@@ -112,21 +127,36 @@ def search_hotel(
 
 @mcp.tool()
 def book_hotel(
-    hotelId:str,
-    checkIn:str,
-    checkOut:str,
-    name:str,
-    email:str,
-    roomType:str
+    hotel_id:str,
+    hotel_name:Optional[str],
+    check_in:str,
+    check_out:str,
+    guest_name:str,
+    guest_email:str,
+    room_type:str,
 ):
+    """ 
+    Book a hotel using a hotel ID returned from a previous
+    search_hotel() or list_all_hotels() call.
+    
+    The hotel ID must never be invented by the AI.
+    
+    Returns the booking confirmation from the external service.
+    """
+    if not hotel_id:
+        return {
+            "error": True,
+            "message": "Hotel ID is required for booking."
+            }
     payload = {
         
-        "hotelId":hotelId,
-        "checkInDate":checkIn,
-        "checkOutDate":checkOut,
-        "guestName":name,
-        "guestEmail":email,
-        "roomType":roomType
+        "hotelId":hotel_id,
+        "hotelName":hotel_name,
+        "checkInDate":check_in,
+        "checkOutDate":check_out,
+        "guestName":guest_name,
+        "guestEmail":guest_email,
+        "roomType":room_type,
     }
 
     url = f"{BASE_URL}/hotels/book"
