@@ -50,6 +50,20 @@ class GraphState(TypedDict):
     flight_results : List[dict]
     response_text : str
 
+    last_intent : Optional[str]
+    budget_adjustment:Optional[str]
+    weather_date : Optional[str]
+
+    weather_results:List[dict]
+    activity_type : Optional[str]
+    activity_results : List[dict]
+
+    transport_from : Optional[str]
+    transport_to : Optional[str]
+    transport_node : Optional[str]
+    transport_results : List[dict]
+
+
    
 
     

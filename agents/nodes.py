@@ -4,16 +4,19 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_mcp_adapters.tools import load_mcp_tools
 from .mcp_client import mcp_client
 from .llm import llm
-from .prompts import get_system_prompt_for_unknown_node, get_system_prompt_with_history
+from .prompts import  get_system_prompt_for_unknown_node , get_system_prompt_with_history
 from .entity import GraphState
 from .mcp_utils import _parse_mcp_result
 import traceback
 
 
 class TravelExtraction(BaseModel):
-    intent: Literal["hotel", "flight", "unknown"] = Field(
+    intent: Literal["hotel", "flight","weather","activities","transport","itinerary","unknown"] = Field(
         default="unknown",
-        description="Main user intent: hotel, flight, or unknown."
+        description= "Main user intent: hotel, flight, weather (forecast for a city), "
+            "activities (things to do/attractions in a city), transport (local "
+            "directions between two places), itinerary (combine a previously "
+            "searched hotel and flight into one plan), or unknown."
     )
 
     sub_action: Literal["search", "list_all","book", "general"] = Field(
@@ -147,8 +150,39 @@ class TravelExtraction(BaseModel):
         description="Airline such as Japan Airlines, Cathay Pacific"
     )
 
+    weather_date: Optional[str] = Field(
+        default = None,
+        description= "Date for a weather forecast in YYYY-MM-DD format. Null if not provided - a general short outlook will be returned instead."
+    )
 
+    activity_type : Optional[str] = Field(
+        default=None,
+        description="Category of activity requested. One of: museums, attractions, nature, nightlife, art, historic. Null if not specified."
+    )
 
+    transport_from : Optional[str] = Field(
+        default = None,
+        description="Starting point for a local transport/directions request within a city, e.g. a hotel name or landmark. Null if not provided."
+    )
+
+    transport_to : Optional[str] = Field(
+        default=None,
+        description="Destination point for a local transport/directions request within a city. Null if not provided."
+    )
+
+    transport_mode : Optional[Literal["driving","walking","cycling"]] = Field(
+        default = None,
+        description="Mode of local transport requested. Null if not specified (defaults to driving)"
+    )
+
+    budget_adjustment : Optional[Literal["lower","higher"]] = Field(
+        default=None,
+        description=( "Set to 'lower' if the user wants cheaper options than a previous search "
+            "(e.g. 'make it cheaper', 'anything less expensive'), or 'higher' for more "
+            "premium options, WITHOUT giving an exact number. Null if the user gave an "
+            "exact budget figure instead (that goes in hotel_budget/flight_budget) or "
+            "didn't ask for a price change.")
+    )
 
 travel_extractor = llm.with_structured_output(TravelExtraction)
 
@@ -203,10 +237,15 @@ def router(state: GraphState) -> dict:
         
         }
 
+    resolved_intent = data.get("intent") or state.get("last_intent","unknown") 
+    if resolved_intent == "unknown" and state.get("last_intent") in ("hotel","flight","weather","activities","transport"):
+        resolved_intent = state["last_intent"]
+
     return {
 
-    "intent": data.get("intent") or state.get("intent","unknown"),
+    "intent": resolved_intent,
     "sub_action": data.get("sub_action") or state.get("sub_action","general"),
+    "last_intent":resolved_intent if resolved_intent in ("hotel","flight","weather","activities","transport") else state.get("last_intent"),
 
     "city": data.get("city") or state.get("city"),
     "city_code": data.get("city_code") or state.get("city_code"),
@@ -225,6 +264,7 @@ def router(state: GraphState) -> dict:
 
     "hotel_budget": data.get("hotel_budget") or state.get("hotel_budget"),
     "flight_budget": data.get("flight_budget") or state.get("flight_budget"),
+    "budget_adjustment":data.get("budget_adjustment"),
 
     "origin_country": data.get("origin_country") or state.get("origin_country"),
     "destination_country": data.get("destination_country") or state.get("destination_country"),
@@ -244,11 +284,20 @@ def router(state: GraphState) -> dict:
     "flying_type": data.get("flying_type") or state.get("flying_type"),
     "hotel_name": data.get("hotel_name") or state.get("hotel_name"),
 
+    "weather_date": data.get("weather_date") or state.get("weather_date"),
+    "activity_type": data.get("activity_type") or state.get("activity_type"),
+    "transport_from": data.get("transport_from") or state.get("transport_from"),
+    "transport_to": data.get("transport_to") or state.get("transport_to"),
+    "transport_mode": data.get("transport_mode") or state.get("transport_mode"),
+
     "activity_status":"ROUTING",
     "tool_status": state.get("tool_status"),
 
     "hotel_results": [],
     "flight_results": [],
+    "weather_results": [],
+    "activity_results": [],
+    "transport_results": [],
     "hotel_search_cache": state.get("hotel_search_cache", []),
     "flight_search_cache": state.get("flight_search_cache", []),
 
@@ -340,7 +389,25 @@ def _format_flight(flight: dict) -> str:
         f"- {currency} {price} - {seats} seats"
     )
 
+def _format_weather_day(day:dict)->str:
+    date = day.get("date","unknown date")
+    condition = day.get("condition","N/A")
+    high = day.get("high_c","N/A")
+    low = day.get("low_c","N/A")
+    return f"{date}:{condition},{low}-{high}\u00b0C"
 
+def _format_activity(place:dict)->str:
+    name = place.get("name","Unknown place")
+    category = place.get("category","attraction")
+    return f"{name} ({category})"
+
+def _format_transport(route:dict)->str:
+    origin = route.get("origin","unknown")
+    destination = route.get("destination","unknown")
+    mode = route.get("mode","driving")
+    distance = route.get("distance_km","N/A")
+    duration = route.get("duration_minutes","N/A")
+    return f"{origin} \u2192 {destination} by {mode} : {distance} km, ~{duration} min"
 
 async def hotel_node(state: GraphState) -> dict:
     try:
@@ -537,6 +604,162 @@ async def flight_node(state: GraphState) -> dict:
             "hotel_results": [], "flight_results": [],
             "response_text": "Flight search is temporarily unavailable — please try again shortly.",
         }
+    
+async def weather_node(state:GraphState)->dict:
+    try:
+        async with mcp_client.session("weather") as session:
+            weather_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(weather_tools)
+
+            messages = [
+                SystemMessage(content=(
+                    "You are the weather agent. Use the available tool to get a forecast for the city the user is asking about"
+                    "If no city is given, ask for one instead of guessing."
+                )),
+                *[HumanMessage(content=m) for m in state["messages"]]
+            ]
+            response = await agent.ainvoke(messages)
+            if response.tool_calls:
+                tool_call = response.tool_calls[0]
+                matching_tool = next(t for t in weather_tools if t.name == tool_call["name"])
+                args = dict(tool_call["args"])
+                raw_result = await matching_tool.ainvoke(args)
+                result = _parse_mcp_result(raw_result)
+
+                if isinstance(result,dict) and result.get("error"):
+                    return{
+                        "weather_results":[],
+                        "response_text":result.get("message","I couldn't get the weather for that city.")
+                    }
+                return{
+                    "weather_results":[result] if isinstance(result,dict) else result,
+                    "response_text":"",
+                }
+            return {"response_text":response.content}
+    except Exception:
+        traceback.print_exc()
+        return {
+            "weather_results":[],
+            "response_text":"The weather service is currently unavailable. Please try again shortly."
+        }
+    
+async def activities_node(state:GraphState)->dict:
+    try:
+        async with mcp_client.session("activities") as session:
+            activity_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(activity_tools)
+
+            messages = [
+                SystemMessage(content=(
+                    "You are the activities agent."
+                    "Use the available tool to find things to do in the city the user mentions"
+                    "Supported categories:museums,attractions,nature,nightlife,art,historic."
+                    "If no city is given, ask for one instead of guessing"
+                )),
+                *[HumanMessage(content=m) for m in state["messages"]],
+            ]
+            response = await agent.ainvoke(messages)
+            if response.tool_calls:
+                tool_call = response.tool_calls[0]
+                matching_tool = next(t for t in activity_tools if t.name == tool_call["name"])
+                args = dict(tool_call["args"])
+                raw_result = await matching_tool.ainvoke(args)
+                result = _parse_mcp_result(raw_result)
+
+                if isinstance(result,dict) and result.get("error"):
+                    return{
+                        "activity_results":[],
+                        "response_text":result.get("message","I couldn't find activities for that city")
+                    }
+                return{
+                    "activity_results":result if isinstance(result,list) else [],
+                    "response_text":"",
+                }
+            return{"response_text":response.content}
+    except Exception:
+        traceback.print_exc()
+        return {
+            "activity_results":[],
+            "response_text":"The activities service is currently unavailable. Please try again shortly."
+        }
+    
+async def transport_node(state:GraphState)-> dict:
+    try:
+        async with mcp_client.session("transport") as session:
+            transport_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(transport_tools)
+
+            messages = [
+                SystemMessage(content=(
+                    "You are the local transport agent. "
+                    "Use the available tool to get directions between two places the user names (e.g. a hotel and an attraction)." \
+                    "Supported modes: driving, walking, cycling (default driving)." \
+                    "If either place is missing ask for it instead of guessing."
+                )),
+                *[HumanMessage(content=m) for m in state["messages"]],
+            ]
+            response = await agent.ainvoke(messages)
+
+            if response.tool_calls:
+                tool_call = response.tool_calls[0]
+                matching_tool = next(t for t in transport_tools if t.name == tool_call["name"])
+                args = dict(tool_call["args"])
+                raw_result = await matching_tool.ainvoke(args)
+                result = _parse_mcp_result(raw_result)
+                if isinstance(result,dict) and result.get("error"):
+                    return {
+                        "transport_results":[],
+                        "response_text":result.get("message","I couldn't find directions for that route."),
+                    }
+                return{
+                    "transport_results":[result] if isinstance(result,dict) else result,
+                    "response_text":"",
+                }
+            return{"response_text":response.content}
+    except Exception:
+        traceback.print_exc()
+        return{
+            "transport_results":[],
+            "response_text":"The transport service is currently unavailable. Please try again shortly."
+        }
+    
+def itinerary_node(state:GraphState)->dict:
+    """
+    Richer orchestration: combines the most recent hotel and flight search 
+    results (already cached in shared state by hotel_node/flight_node) into
+    a single itinerary, without needing a fresh MCP call of its own.
+    """
+    hotels = state.get("hotel_search_cache",[])
+    flights = state.get("flight_search_cache",[])
+
+    missing = []
+    if not hotels:
+        missing.append("a hotel search")
+    if not flights:
+        missing.append("a flight search")
+    if missing:
+        return{
+            "hotel_results":[], "flight_results":[],
+            "response_text":(
+                f"I need {'and'.join(missing)} first before I can put together an itinerary."
+                "Try searching for a hotel and a flight, then ask me to combine them."
+            )
+        }
+    top_flight = flights[0]
+    top_hotel = hotels[0]
+
+    lines = [
+        "Here's a combined itinerary based on your most recent searches:\n",
+        "Flight:",
+        _format_flight(top_flight),
+        "\nHotel:",
+        _format_hotel(top_hotel)
+    ]
+    return {
+        "hotel_results":[top_hotel],
+        "flight_results":[top_flight],
+        "response_text":"\n".join(lines),
+    }
 
 def unknown_node(state: GraphState) -> dict:
     user_message = state["messages"][-1]
@@ -577,6 +800,9 @@ def generate_response(state: GraphState) -> dict:
 
     hotel_results = state.get("hotel_results", [])
     flight_results = state.get("flight_results", [])
+    weather_results = state.get("weather_results",[])
+    activity_results = state.get("activity_results")
+    transport_results = state.get("transport_results",[])
 
     if hotel_results:
         count = len(hotel_results)
@@ -599,7 +825,27 @@ def generate_response(state: GraphState) -> dict:
                 + "\n".join(lines)
             )
         }
-
+    
+    if weather_results:
+        forecast = weather_results[0].get("forecast",[]) if isinstance(weather_results[0],dict) else []
+        city = weather_results[0].get("city","that city") if isinstance(weather_results[0],dict) else "that city"
+        lines = [_format_weather_day(day) for day in forecast[:5]]
+        return{
+            "response_text":f"Weather for {city}:\n"+"\n".join(lines)
+        }
+    
+    if activity_results:
+        count = len(activity_results)
+        lines = [_format_activity(place) for place in activity_results[:8]]
+        return{
+            "response_text":(
+                f"I found {count} thing {'s' if count !=1 else ''} to do:\n"
+                +"\n".join(lines)
+            )
+        }
+    if transport_results:
+        lines = [_format_transport(route) for route in transport_results[:1]]
+        return {"response_text":"\n".join(lines)}
     return {
         "response_text": "I couldn't find matching travel options."
     }
@@ -608,10 +854,7 @@ def generate_response(state: GraphState) -> dict:
 def route_after_extraction(state: GraphState) -> str:
     intent = state.get("intent", "unknown")
 
-    if intent == "hotel":
-        return "hotel"
-
-    if intent == "flight":
-        return "flight"
-
+    if intent in ("hotel","flight","weather","activities","transport","itinerary"):
+        return intent
+    
     return "unknown"

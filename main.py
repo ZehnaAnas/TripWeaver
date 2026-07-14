@@ -70,7 +70,21 @@ def create_empty_state():
         "hotel_results": [],
         "flight_results": [],
 
-        "response_text": ""
+        "response_text": "",
+        
+        "last_intent":None,
+        "budget_adjustment":None,
+
+        "weather_date":None,
+        "weather_results":[],
+
+        "activity_type":None,
+        "activity_results":[],
+
+        "transport_from":None,
+        "transport_to":None,
+        "transport_mode":None,
+        "transport_results":[]
     }
 
 def get_session_state(session_id:str)-> dict:
