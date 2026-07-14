@@ -128,7 +128,7 @@ def book_flight(
     passport_number:str,
     nationality:str,
     flight_id:str,
-    airline:Optional[str],
+    airline:Optional[str]=None,
 )->dict:
     """ 
     Book a flight using a flight ID returned from a previous

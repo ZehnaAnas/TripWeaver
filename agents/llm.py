@@ -10,7 +10,10 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 OPENAI_API_KEY = SecretStr(os.getenv("OPENAI_API_KEY") or " ")
-
+if not OPENAI_API_KEY:
+    raise RuntimeError(
+        "OPENAI_API_KEY is not set. Add it to your .env file before starting the app."
+    )
 llm = ChatOpenAI(
     model="gpt-4o-mini", 
     api_key=OPENAI_API_KEY, 

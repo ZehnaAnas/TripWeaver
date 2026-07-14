@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from entity import ChatRequest, ChatResponse
+import uuid
+from entity import ChatRequest, ChatResponse,ResetRequest
 from agents.graph import graph
 
 
@@ -15,6 +15,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+sessions: dict[str,dict] = {}
+
+MAX_MESSSAGES = 20
 
 def create_empty_state():
     return {
@@ -58,16 +61,36 @@ def create_empty_state():
         "guest_email": None,
         "room_type": None,
 
+        "airline":None,
+        "hotel_name":None,
+
         "hotel_search_cache": [],
         "flight_search_cache": [],
 
         "hotel_results": [],
         "flight_results": [],
 
-        "response_text": ""
+        "response_text": "",
+        
+        "last_intent":None,
+        "budget_adjustment":None,
+
+        "weather_date":None,
+        "weather_results":[],
+
+        "activity_type":None,
+        "activity_results":[],
+
+        "transport_from":None,
+        "transport_to":None,
+        "transport_mode":None,
+        "transport_results":[]
     }
 
-conversation_state = create_empty_state()
+def get_session_state(session_id:str)-> dict:
+    if session_id not in sessions:
+        sessions[session_id] = create_empty_state()
+    return sessions[session_id]
 
 @app.get("/")
 async def hello():
@@ -76,37 +99,43 @@ async def hello():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+    session_id = request.session_id or str(uuid.uuid4())
+    state = get_session_state(session_id)
 
-    # Add latest user message
-    conversation_state["messages"].append(request.message)
+    state["messages"].append(request.message)
+    if len(state["messages"]) > MAX_MESSSAGES:
+        state["messages"] = state["messages"][-MAX_MESSSAGES:]
 
     # Run graph
-    result = await graph.ainvoke(conversation_state)
+    result = await graph.ainvoke(state)
 
     # Save returned values back into the conversation state
     for key, value in result.items():
-        conversation_state[key] = value
+        state[key] = value
 
-    response_text = conversation_state.get(
+    response_text = state.get(
         "response_text",
         "Something went wrong."
     )
-
     # Save assistant reply so future prompts have chat history
-    conversation_state["messages"].append(response_text)
-
+    state["messages"].append(response_text)
+    if len(state["messages"])>MAX_MESSSAGES:
+        state["messages"] = state["messages"][-MAX_MESSSAGES:]
+    
+    sessions[session_id] = state
     return ChatResponse(
         response=response_text,
-        hotels=conversation_state.get("hotel_results") or None,
-        flights=conversation_state.get("flight_results") or None,
+        session_id=session_id,
+        hotels=state.get("hotel_results") or None,
+        flights=state.get("flight_results") or None,
     )
 
 
 @app.post("/reset")
-async def reset():
-    global conversation_state
-    conversation_state = create_empty_state()
-    return {"message": "Conversation reset successfully."}
+async def reset(request:ChatRequest):
+    if request.session_id in sessions:
+        del sessions[request.session_id]
+    return {"message":"Conversation reset successfully"}
 
 if __name__ == "__main__":
     import uvicorn

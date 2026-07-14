@@ -128,12 +128,12 @@ def search_hotel(
 @mcp.tool()
 def book_hotel(
     hotel_id:str,
-    hotel_name:Optional[str],
     check_in:str,
     check_out:str,
     guest_name:str,
     guest_email:str,
     room_type:str,
+    hotel_name:Optional[str]=None,
 ):
     """ 
     Book a hotel using a hotel ID returned from a previous

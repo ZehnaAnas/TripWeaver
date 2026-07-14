@@ -1,20 +1,22 @@
 from typing import Optional, Literal
-
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_mcp_adapters.tools import load_mcp_tools
 from .mcp_client import mcp_client
 from .llm import llm
-from .prompts import get_system_prompt_for_unknown_node, get_system_prompt_with_history
+from .prompts import  get_system_prompt_for_unknown_node , get_system_prompt_with_history
 from .entity import GraphState
 from .mcp_utils import _parse_mcp_result
 import traceback
 
 
 class TravelExtraction(BaseModel):
-    intent: Literal["hotel", "flight", "unknown"] = Field(
+    intent: Literal["hotel", "flight","weather","activities","transport","itinerary","unknown"] = Field(
         default="unknown",
-        description="Main user intent: hotel, flight, or unknown."
+        description= "Main user intent: hotel, flight, weather (forecast for a city), "
+            "activities (things to do/attractions in a city), transport (local "
+            "directions between two places), itinerary (combine a previously "
+            "searched hotel and flight into one plan), or unknown."
     )
 
     sub_action: Literal["search", "list_all","book", "general"] = Field(
@@ -148,8 +150,39 @@ class TravelExtraction(BaseModel):
         description="Airline such as Japan Airlines, Cathay Pacific"
     )
 
+    weather_date: Optional[str] = Field(
+        default = None,
+        description= "Date for a weather forecast in YYYY-MM-DD format. Null if not provided - a general short outlook will be returned instead."
+    )
 
+    activity_type : Optional[str] = Field(
+        default=None,
+        description="Category of activity requested. One of: museums, attractions, nature, nightlife, art, historic. Null if not specified."
+    )
 
+    transport_from : Optional[str] = Field(
+        default = None,
+        description="Starting point for a local transport/directions request within a city, e.g. a hotel name or landmark. Null if not provided."
+    )
+
+    transport_to : Optional[str] = Field(
+        default=None,
+        description="Destination point for a local transport/directions request within a city. Null if not provided."
+    )
+
+    transport_mode : Optional[Literal["driving","walking","cycling"]] = Field(
+        default = None,
+        description="Mode of local transport requested. Null if not specified (defaults to driving)"
+    )
+
+    budget_adjustment : Optional[Literal["lower","higher"]] = Field(
+        default=None,
+        description=( "Set to 'lower' if the user wants cheaper options than a previous search "
+            "(e.g. 'make it cheaper', 'anything less expensive'), or 'higher' for more "
+            "premium options, WITHOUT giving an exact number. Null if the user gave an "
+            "exact budget figure instead (that goes in hotel_budget/flight_budget) or "
+            "didn't ask for a price change.")
+    )
 
 travel_extractor = llm.with_structured_output(TravelExtraction)
 
@@ -167,12 +200,9 @@ def router(state: GraphState) -> dict:
             invocation_messages.append(AIMessage(content=history_messages[i + 1]))
     invocation_messages.append(HumanMessage(content=user_message))
 
-    if user_message.lower() in ["yes", "confirm", "proceed"]:
-        state["booking_confirmed"] = True
+    booking_confirmed_this_turn = user_message.lower() in ["yes","confirm","proceed"]
     try:
-        state["activity_status"] = "ROUTING"
         extracted = travel_extractor.invoke(invocation_messages)
-
         data = extracted.dict()
 
     except Exception:
@@ -207,10 +237,15 @@ def router(state: GraphState) -> dict:
         
         }
 
+    resolved_intent = data.get("intent") or state.get("last_intent","unknown") 
+    if resolved_intent == "unknown" and state.get("last_intent") in ("hotel","flight","weather","activities","transport"):
+        resolved_intent = state["last_intent"]
+
     return {
 
-    "intent": data.get("intent") or state.get("intent","unknown"),
+    "intent": resolved_intent,
     "sub_action": data.get("sub_action") or state.get("sub_action","general"),
+    "last_intent":resolved_intent if resolved_intent in ("hotel","flight","weather","activities","transport") else state.get("last_intent"),
 
     "city": data.get("city") or state.get("city"),
     "city_code": data.get("city_code") or state.get("city_code"),
@@ -225,10 +260,11 @@ def router(state: GraphState) -> dict:
 
     "hotel_id": data.get("hotel_id") or state.get("hotel_id"),
     "flight_id": data.get("flight_id") or state.get("flight_id"),
-    "booking_confirmed": state.get("booking_confirmed", False),
+    "booking_confirmed": booking_confirmed_this_turn or state.get("booking_confirmed", False),
 
     "hotel_budget": data.get("hotel_budget") or state.get("hotel_budget"),
     "flight_budget": data.get("flight_budget") or state.get("flight_budget"),
+    "budget_adjustment":data.get("budget_adjustment"),
 
     "origin_country": data.get("origin_country") or state.get("origin_country"),
     "destination_country": data.get("destination_country") or state.get("destination_country"),
@@ -248,11 +284,20 @@ def router(state: GraphState) -> dict:
     "flying_type": data.get("flying_type") or state.get("flying_type"),
     "hotel_name": data.get("hotel_name") or state.get("hotel_name"),
 
-    "activity_status": state.get("activity_status"),
+    "weather_date": data.get("weather_date") or state.get("weather_date"),
+    "activity_type": data.get("activity_type") or state.get("activity_type"),
+    "transport_from": data.get("transport_from") or state.get("transport_from"),
+    "transport_to": data.get("transport_to") or state.get("transport_to"),
+    "transport_mode": data.get("transport_mode") or state.get("transport_mode"),
+
+    "activity_status":"ROUTING",
     "tool_status": state.get("tool_status"),
 
-    "hotel_results": state.get("hotel_results", []),
-    "flight_results": state.get("flight_results", []),
+    "hotel_results": [],
+    "flight_results": [],
+    "weather_results": [],
+    "activity_results": [],
+    "transport_results": [],
     "hotel_search_cache": state.get("hotel_search_cache", []),
     "flight_search_cache": state.get("flight_search_cache", []),
 
@@ -344,39 +389,42 @@ def _format_flight(flight: dict) -> str:
         f"- {currency} {price} - {seats} seats"
     )
 
+def _format_weather_day(day:dict)->str:
+    date = day.get("date","unknown date")
+    condition = day.get("condition","N/A")
+    high = day.get("high_c","N/A")
+    low = day.get("low_c","N/A")
+    return f"{date}:{condition},{low}-{high}\u00b0C"
 
+def _format_activity(place:dict)->str:
+    name = place.get("name","Unknown place")
+    category = place.get("category","attraction")
+    return f"{name} ({category})"
+
+def _format_transport(route:dict)->str:
+    origin = route.get("origin","unknown")
+    destination = route.get("destination","unknown")
+    mode = route.get("mode","driving")
+    distance = route.get("distance_km","N/A")
+    duration = route.get("duration_minutes","N/A")
+    return f"{origin} \u2192 {destination} by {mode} : {distance} km, ~{duration} min"
 
 async def hotel_node(state: GraphState) -> dict:
     try:
-        async with mcp_client.session("hotel") as session:
-            hotel_tools = await load_mcp_tools(session)
-            state["activity_status"] = "SEARCHING"
-            state["tool_status"] = "INVOKED"
-            agent = llm.bind_tools(hotel_tools)
-            state["tool_status"] = "SUCCEEDED"
-            state["activity_status"] = "RESPONDING"
-            messages = [
-                SystemMessage(content=(
-                    "You are the hotel booking agent. "
-                    "Use the available tools to search,list, or book hotels according to the user's input. "
-                    "If the user has given an input about hotels but with mispellings, wrong formats and other errors, find similar flight information according to it and ask the user if it's correct ,if not ask them to try again"
-                    "Never invent a hotel_id, it must come from a prior search or list result. "
-                    "If required hotel booking details are missing, then ask the user for them instead of guessing"
-                    "Before confirming the hotel booking , make sure to ask the user if the details are correct and if they agree to proceed with the booking. "
-                    )),
-                    *[HumanMessage(content=m) for m in state["messages"]],
-            ]
-            message = state["messages"][-1].lower()
-            if "first" in message and state["hotel_search_cache"]:
-                state["hotel_id"] = state["hotel_search_cache"][0]["hotelID"]
-            elif "second" in message  and len(state["hotel_search_cache"])>=1:
-                state["hotel_id"] = state["hotel_search_cache"][1]["hotelID"]
-            elif "third" in message and len(state["hotel_search_cache"]) >= 2:
-                state["hotel_id"] = state["hotel_search_cache"][2]["hotelID"]
-            if state["sub_action"] == "book":
-                state["activity_status"] = "BOOKING"
+        message = state["messages"][-1].lower()
+        resolved_hotel_id = state.get("hotel_id")
+        cache = state.get("hotel_search_cache",[])
+        if "first" in message and len(cache)>=1:
+            resolved_hotel_id = cache[0]["hotelID"]
+        elif "second" in message and len(cache)>=2:
+            resolved_hotel_id = cache[1]["hotelID"]
+        elif "third" in message and len(cache)>=3:
+            resolved_hotel_id = cache[2]["hotelID"]
+
+        
+        if state["sub_action"] == "book":
                 missing = []
-                if not state["hotel_id"]:
+                if not resolved_hotel_id:
                     missing.append("hotel ID")
                 if not state["guest_name"]:
                     missing.append("guest name")
@@ -389,138 +437,329 @@ async def hotel_node(state: GraphState) -> dict:
                 if not state["room_type"]:
                     missing.append("room type")
                 if missing:
-                    state["activity_status"] = "CLARIFYING"
                     return{
-                        "response_text":
-                        f"I need the following information before booking:\n"
-                        +"\n".join(missing)
+                        "hotel_id":resolved_hotel_id,
+                        "activity_status":"CLARIFYING",
+                        "response_text":f"I need the following information before booking:\n"+"\n".join(missing)
                         }
                 if not state.get("booking_confirmed"):
                     return {
-                        "response_text":
-                        (
-                            "Please confirm these booking details.\n\n"
-                            "Reply with 'Yes' if you'd like me to complete the booking."
-                        )
-                            }
+                        "hotel_id":resolved_hotel_id,
+                        "activity_status":"CLARIFYING",
+                        "response_text":"Please confirm these booking details.\n\nReply with 'Yes' if you'd like me to complete the booking."
+                    }
+                
+        async with mcp_client.session("hotel") as session:
+            hotel_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(hotel_tools)
+            messages = [
+                SystemMessage(content=(
+                    "You are the hotel booking agent. "
+                    "Use the available tools to search,list, or book hotels according to the user's input. "
+                    "If the user has given an input about hotels but with mispellings, wrong formats and other errors, find similar flight information according to it and ask the user if it's correct ,if not ask them to try again"
+                    "Never invent a hotel_id, it must come from a prior search or list result. "
+                    "If required hotel booking details are missing, then ask the user for them instead of guessing"
+                    "Before confirming the hotel booking , make sure to ask the user if the details are correct and if they agree to proceed with the booking. "
+                    )),
+                    *[HumanMessage(content=m) for m in state["messages"]],
+            ]
+            
             response = await agent.ainvoke(messages)
             if response.tool_calls:
                 tool_call = response.tool_calls[0]
                 matching_tool = next(t for t in hotel_tools if t.name == tool_call["name"])
-                result = _parse_mcp_result(await matching_tool.ainvoke(tool_call["args"]))
+                args = dict(tool_call["args"])
+                if tool_call["name"] == "book_hotel" and resolved_hotel_id:
+                    args["hotel_id"] = resolved_hotel_id
+                result = _parse_mcp_result(await matching_tool.ainvoke(args))
                 if isinstance(result,list):
                     if result and isinstance(result[0], dict) and result[0].get("error"):
                         return {
+                            "hotel_id":resolved_hotel_id,
                             "response_text": result[0]["message"],
                             "flight_results": [],
                             "hotel_results": []
                             }
                     return {
+                    "hotel_id":resolved_hotel_id,
                     "hotel_results":result,
                     "hotel_search_cache":result,
                     "flight_results":[],
                     "response_text":""
                     }
                 if isinstance(result,dict) and result.get("error"):
-                    return {"hotel_results":[],"flight_results":[],"response_text":"I couldn't complete that request- the hotel service returned an error. Please try again or rephrase your search"}
+                    return {"hotel_id":resolved_hotel_id,"hotel_results":[],"flight_results":[],"response_text":"I couldn't complete that request- the hotel service returned an error. Please try again or rephrase your search"}
                 return {
+                "hotel_id":resolved_hotel_id,
+                "booking_confirmed":False,
                 "hotel_results":[],
                 "flight_results":[],
                 "response_text":str(result)
                 }
-            return {"response_text":response.content}
+            return {"hotel_id":resolved_hotel_id,"response_text":response.content}
     except Exception as e:
             traceback.print_exc()
             return {"hotel_results":[],"flight_results":[],"response_text":"The hotel booking service is currently unavailable. Please try again in a few moments or continue asking other travel questions."}
 
 async def flight_node(state: GraphState) -> dict:
     try:
+        message = state["messages"][-1].lower()
+        resolved_flight_id = state.get("flight_id")
+        cache = state.get("flight_search_cache", [])
+        if "first" in message and len(cache) >= 1:
+            resolved_flight_id = cache[0]["flightId"]
+        elif "second" in message and len(cache) >= 2:
+            resolved_flight_id = cache[1]["flightId"]
+        elif "third" in message and len(cache) >= 3:
+            resolved_flight_id = cache[2]["flightId"]
+
+        if state.get("sub_action") == "book":
+            missing = []
+            if not resolved_flight_id:
+                missing.append("flight ID")
+            if not state.get("passenger_email"):
+                missing.append("passenger email")
+            if not state.get("passenger_name"):
+                missing.append("passenger name")
+            if not state.get("flying_type"):
+                missing.append("flying type")
+            if not state.get("date_of_birth"):
+                missing.append("date of birth")
+            if not state.get("passport_number"):
+                missing.append("passport number")
+            if not state.get("nationality"):
+                missing.append("nationality")
+
+            if missing:
+                return {
+                    "flight_id": resolved_flight_id,
+                    "activity_status": "CLARIFYING",
+                    "response_text": "I still need:\n" + "\n".join(missing),
+                }
+
+            if not state.get("booking_confirmed"):
+                return {
+                    "flight_id": resolved_flight_id,
+                    "activity_status": "CLARIFYING",
+                    "response_text": "Please confirm these booking details.\n\nReply with 'Yes' if you'd like me to complete the booking.",
+                }
+
         async with mcp_client.session("flight") as session:
             flight_tools = await load_mcp_tools(session)
-            state["activity_status"] = "SEARCHING"
-            state["tool_status"] = "INVOKED"
             agent = llm.bind_tools(flight_tools)
+
             messages = [
                 SystemMessage(content=(
-                    "You are the flight booking agent."
-                    "Use the available tools to list,search or book flights according to the user's input."
-                    "If the user has given an input about flights but with mispellings, wrong formats and other errors, find similar flight information according to it and ask the user if it's correct ,if not ask them to try again"
-                    "Never invent the flight_id, ensure it comes from a prior list or search result."
-                    "If required flight booking details are missing , then ask the user for it instead of guessing them"
-                    "Before confirming the flight booking , make sure to ask the user if the details are correct and if they agree to proceed with the booking"
+                    "You are the flight booking agent. "
+                    "Use the available tools to list, search, or book flights according to the user's input. "
+                    "If the user has given an input about flights but with misspellings, wrong formats, or other "
+                    "errors, find the closest matching flight information and ask the user to confirm it before "
+                    "proceeding; if there's no reasonable match, ask them to try again. "
+                    "Never invent a flight_id — it must come from a prior search or list result. "
+                    "If required booking details are missing, ask the user for them instead of guessing. "
+                    "Before confirming a booking, ask the user to confirm the details are correct."
                 )),
                 *[HumanMessage(content=m) for m in state["messages"]],
             ]
-            state["tool_status"] = "SUCCEEDED"
-            state["activity_status"] = "RESPONDING"
-            message = state["messages"][-1].lower()
-            if "first" in message and state["flight_search_cache"]:
-                state["flight_id"] = state["flight_search_cache"][0]["flightId"]
-            elif "second" in message and len(state["flight_search_cache"])>= 1:
-                state["flight_id"] = state["flight_search_cache"][1]["flightId"]
-            elif "third" in message and len(state["flight_search_cache"]) >= 2:
-                state["flight_id"] = state["flight_search_cache"][2]["flightId"]
 
-            if state["sub_action"]=="book":
-                state["activity_status"] = "BOOKING"
-                state["tool_status"] = "INVOKED"
-                missing = []
-                if not state["flight_id"]:
-                    missing.append("flight ID")
-                if not state["passenger_email"]:
-                    missing.append("Passenger Email")
-                if not state["passenger_name"]:
-                    missing.append("Passenger Name")
-                if not state["flying_type"]:
-                    missing.append("flying type")
-                if not state["date_of_birth"]:
-                    missing.append("Date of birth")
-                if not state["passport_number"]:
-                    missing.append("passport number")
-                if not state["nationality"]:
-                    missing.append("nationality")
-                if not state["flight_id"]:
-                    missing.append("flight ID")
-                if missing:
-                    state["activity_status"] = "CLARIFYING"
-                    return {
-                        "response_text":
-                        "I still need:\n" + "\n".join(missing)
-                        }
-                if not state.get("booking_confirmed"):
-                    return {
-                        "response_text":
-                        (
-                            "Please confirm these booking details.\n\n"
-                            "Reply with 'Yes' if you'd like me to complete the booking."
-                        )
-                            }
-    
             response = await agent.ainvoke(messages)
+
             if response.tool_calls:
                 tool_call = response.tool_calls[0]
                 matching_tool = next(t for t in flight_tools if t.name == tool_call["name"])
-                result = _parse_mcp_result(await matching_tool.ainvoke(tool_call["args"]))
-                if isinstance(result,list):
-                    return{
-                        "hotel_results":[],
-                        "flight_results":result,
-                        "flight_search_cache":result,
-                        "response_text":""
-                        } 
-                if isinstance(result,dict) and result.get("error"):
-                    return {"hotel_results":[],"flight_results":[],"response_text":"I couldn't complete that request- the flight service returned an error. Please try again or rephrase your search"}
-                return{
-                    "hotel_results":[],
-                    "flight_results":[],
-                    "response_text":str(result),
+                args = dict(tool_call["args"])
+                if tool_call["name"] == "book_flight" and resolved_flight_id:
+                    args["flight_id"] = resolved_flight_id
+
+                result = _parse_mcp_result(await matching_tool.ainvoke(args))
+
+                if isinstance(result, list):
+                    return {
+                        "flight_id": resolved_flight_id,
+                        "hotel_results": [],
+                        "flight_results": result,
+                        "flight_search_cache": result,
+                        "response_text": "",
                     }
-            return{
-            "response_text":response.content
+
+                if isinstance(result, dict) and result.get("error"):
+                    return {
+                        "flight_id": resolved_flight_id,
+                        "hotel_results": [], "flight_results": [],
+                        "response_text": "I couldn't complete that request — the flight service returned an error. Please try again or rephrase your search.",
+                    }
+
+                return {
+                    "flight_id": resolved_flight_id,
+                    "booking_confirmed": False,
+                    "hotel_results": [], "flight_results": [],
+                    "response_text": str(result),
+                }
+
+            return {"flight_id": resolved_flight_id, "response_text": response.content}
+
+    except Exception:
+        traceback.print_exc()
+        return {
+            "hotel_results": [], "flight_results": [],
+            "response_text": "Flight search is temporarily unavailable — please try again shortly.",
         }
-    except Exception as e:
-                traceback.print_exc()
-                return {"hotel_results":[],"flight_results":[],"response_text":"Flight search is temporarily unavailable - please try again shortly"}
+    
+async def weather_node(state:GraphState)->dict:
+    try:
+        async with mcp_client.session("weather") as session:
+            weather_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(weather_tools)
+
+            messages = [
+                SystemMessage(content=(
+                    "You are the weather agent. Use the available tool to get a forecast for the city the user is asking about"
+                    "If no city is given, ask for one instead of guessing."
+                )),
+                *[HumanMessage(content=m) for m in state["messages"]]
+            ]
+            response = await agent.ainvoke(messages)
+            if response.tool_calls:
+                tool_call = response.tool_calls[0]
+                matching_tool = next(t for t in weather_tools if t.name == tool_call["name"])
+                args = dict(tool_call["args"])
+                raw_result = await matching_tool.ainvoke(args)
+                result = _parse_mcp_result(raw_result)
+
+                if isinstance(result,dict) and result.get("error"):
+                    return{
+                        "weather_results":[],
+                        "response_text":result.get("message","I couldn't get the weather for that city.")
+                    }
+                return{
+                    "weather_results":[result] if isinstance(result,dict) else result,
+                    "response_text":"",
+                }
+            return {"response_text":response.content}
+    except Exception:
+        traceback.print_exc()
+        return {
+            "weather_results":[],
+            "response_text":"The weather service is currently unavailable. Please try again shortly."
+        }
+    
+async def activities_node(state:GraphState)->dict:
+    try:
+        async with mcp_client.session("activities") as session:
+            activity_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(activity_tools)
+
+            messages = [
+                SystemMessage(content=(
+                    "You are the activities agent."
+                    "Use the available tool to find things to do in the city the user mentions"
+                    "Supported categories:museums,attractions,nature,nightlife,art,historic."
+                    "If no city is given, ask for one instead of guessing"
+                )),
+                *[HumanMessage(content=m) for m in state["messages"]],
+            ]
+            response = await agent.ainvoke(messages)
+            if response.tool_calls:
+                tool_call = response.tool_calls[0]
+                matching_tool = next(t for t in activity_tools if t.name == tool_call["name"])
+                args = dict(tool_call["args"])
+                raw_result = await matching_tool.ainvoke(args)
+                result = _parse_mcp_result(raw_result)
+
+                if isinstance(result,dict) and result.get("error"):
+                    return{
+                        "activity_results":[],
+                        "response_text":result.get("message","I couldn't find activities for that city")
+                    }
+                return{
+                    "activity_results":result if isinstance(result,list) else [],
+                    "response_text":"",
+                }
+            return{"response_text":response.content}
+    except Exception:
+        traceback.print_exc()
+        return {
+            "activity_results":[],
+            "response_text":"The activities service is currently unavailable. Please try again shortly."
+        }
+    
+async def transport_node(state:GraphState)-> dict:
+    try:
+        async with mcp_client.session("transport") as session:
+            transport_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(transport_tools)
+
+            messages = [
+                SystemMessage(content=(
+                    "You are the local transport agent. "
+                    "Use the available tool to get directions between two places the user names (e.g. a hotel and an attraction)." \
+                    "Supported modes: driving, walking, cycling (default driving)." \
+                    "If either place is missing ask for it instead of guessing."
+                )),
+                *[HumanMessage(content=m) for m in state["messages"]],
+            ]
+            response = await agent.ainvoke(messages)
+
+            if response.tool_calls:
+                tool_call = response.tool_calls[0]
+                matching_tool = next(t for t in transport_tools if t.name == tool_call["name"])
+                args = dict(tool_call["args"])
+                raw_result = await matching_tool.ainvoke(args)
+                result = _parse_mcp_result(raw_result)
+                if isinstance(result,dict) and result.get("error"):
+                    return {
+                        "transport_results":[],
+                        "response_text":result.get("message","I couldn't find directions for that route."),
+                    }
+                return{
+                    "transport_results":[result] if isinstance(result,dict) else result,
+                    "response_text":"",
+                }
+            return{"response_text":response.content}
+    except Exception:
+        traceback.print_exc()
+        return{
+            "transport_results":[],
+            "response_text":"The transport service is currently unavailable. Please try again shortly."
+        }
+    
+def itinerary_node(state:GraphState)->dict:
+    """
+    Richer orchestration: combines the most recent hotel and flight search 
+    results (already cached in shared state by hotel_node/flight_node) into
+    a single itinerary, without needing a fresh MCP call of its own.
+    """
+    hotels = state.get("hotel_search_cache",[])
+    flights = state.get("flight_search_cache",[])
+
+    missing = []
+    if not hotels:
+        missing.append("a hotel search")
+    if not flights:
+        missing.append("a flight search")
+    if missing:
+        return{
+            "hotel_results":[], "flight_results":[],
+            "response_text":(
+                f"I need {'and'.join(missing)} first before I can put together an itinerary."
+                "Try searching for a hotel and a flight, then ask me to combine them."
+            )
+        }
+    top_flight = flights[0]
+    top_hotel = hotels[0]
+
+    lines = [
+        "Here's a combined itinerary based on your most recent searches:\n",
+        "Flight:",
+        _format_flight(top_flight),
+        "\nHotel:",
+        _format_hotel(top_hotel)
+    ]
+    return {
+        "hotel_results":[top_hotel],
+        "flight_results":[top_flight],
+        "response_text":"\n".join(lines),
+    }
 
 def unknown_node(state: GraphState) -> dict:
     user_message = state["messages"][-1]
@@ -561,6 +800,9 @@ def generate_response(state: GraphState) -> dict:
 
     hotel_results = state.get("hotel_results", [])
     flight_results = state.get("flight_results", [])
+    weather_results = state.get("weather_results",[])
+    activity_results = state.get("activity_results")
+    transport_results = state.get("transport_results",[])
 
     if hotel_results:
         count = len(hotel_results)
@@ -583,7 +825,27 @@ def generate_response(state: GraphState) -> dict:
                 + "\n".join(lines)
             )
         }
-
+    
+    if weather_results:
+        forecast = weather_results[0].get("forecast",[]) if isinstance(weather_results[0],dict) else []
+        city = weather_results[0].get("city","that city") if isinstance(weather_results[0],dict) else "that city"
+        lines = [_format_weather_day(day) for day in forecast[:5]]
+        return{
+            "response_text":f"Weather for {city}:\n"+"\n".join(lines)
+        }
+    
+    if activity_results:
+        count = len(activity_results)
+        lines = [_format_activity(place) for place in activity_results[:8]]
+        return{
+            "response_text":(
+                f"I found {count} thing {'s' if count !=1 else ''} to do:\n"
+                +"\n".join(lines)
+            )
+        }
+    if transport_results:
+        lines = [_format_transport(route) for route in transport_results[:1]]
+        return {"response_text":"\n".join(lines)}
     return {
         "response_text": "I couldn't find matching travel options."
     }
@@ -592,10 +854,7 @@ def generate_response(state: GraphState) -> dict:
 def route_after_extraction(state: GraphState) -> str:
     intent = state.get("intent", "unknown")
 
-    if intent == "hotel":
-        return "hotel"
-
-    if intent == "flight":
-        return "flight"
-
+    if intent in ("hotel","flight","weather","activities","transport","itinerary"):
+        return intent
+    
     return "unknown"

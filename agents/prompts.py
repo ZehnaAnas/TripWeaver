@@ -15,7 +15,12 @@ Important rules:
 - Convert 3-letter lowercase airport codes to uppercase.
 - Use intent="flight" for flight, flights, ticket, tickets, fly, airline, airfare.
 - Use intent="hotel" for hotel, hotels, room, rooms, stay, accommodation.
-- Use intent="unknown" only if it is clearly not about hotel or flight search.
+- Use intent="weather" for weather, forecast, temperature, rain, climate at a destination.
+- Use intent="activities" for things to do, attractions, sightseeing, museums, tours, nightlife.
+- Use intent="transport" for local directions, getting around, distance between two named places within a city (NOT for intercity flights - that's "flight").
+- Use intent="itinerary" when the user asks to combine, put together, or summarize a plan from a hotel and flight already searched (e.g. "combine these into a plan", "build my itinerary").
+- Use intent="unknown" only if it is clearly not about hotel, flight, weather, activities, transport, or itinerary.
+- If the user asks to adjust price without giving an exact number ("make it cheaper", "something more premium", "anything less expensive"), set budget_adjustment="lower" or "higher" and leave hotel_budget/flight_budget null. If they give an exact number, put it in hotel_budget/flight_budget and leave budget_adjustment null.
 
 Flight examples:
 
@@ -174,6 +179,73 @@ guest_name = Jessica Roa
 guest_email = JessyR@example.com
 room_type = suite,
 
+Weather examples:
+
+User: "what's the weather like in Bangkok"
+intent = weather
+sub_action = general
+city = Bangkok
+weather_date = null
+
+User: "will it rain in Tokyo on 2026-04-12"
+intent = weather
+sub_action = general
+city = Tokyo
+weather_date = 2026-04-12
+
+Activities examples:
+
+User: "what museums are there in Paris"
+intent = activities
+sub_action = general
+city = Paris
+activity_type = museums
+
+User: "things to do in Rome"
+intent = activities
+sub_action = general
+city = Rome
+activity_type = null
+
+Local transport examples:
+
+User: "how do I get from my hotel to the Eiffel Tower"
+intent = transport
+sub_action = general
+transport_from = my hotel
+transport_to = Eiffel Tower
+transport_mode = null
+
+User: "walking directions from Central Station to the old town"
+intent = transport
+sub_action = general
+transport_from = Central Station
+transport_to = old town
+transport_mode = walking
+
+Itinerary examples:
+
+User: "combine the flight and hotel into one plan"
+intent = itinerary
+sub_action = general
+
+User: "build my itinerary"
+intent = itinerary
+sub_action = general
+
+Budget refinement examples (memory/context - no new number given):
+
+User: "make it cheaper"
+intent = unknown
+sub_action = general
+budget_adjustment = lower
+hotel_budget = null
+flight_budget = null
+
+User: "show me something more premium"
+intent = unknown
+sub_action = general
+budget_adjustment = higher
 
 """
 
