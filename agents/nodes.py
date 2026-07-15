@@ -6,7 +6,7 @@ from .mcp_client import mcp_client
 from .llm import llm
 from .prompts import  get_system_prompt_for_unknown_node , get_system_prompt_with_history
 from .entity import GraphState
-from .mcp_utils import _parse_mcp_result
+from .mcp_utils import _parse_mcp_result,_extract_mcp_error
 import traceback
 
 
@@ -59,15 +59,6 @@ class TravelExtraction(BaseModel):
         description="Flight date in YYYY-MM-DD format. Null if not provided."
     )
 
-    hotel_id: Optional[str] = Field(
-        default=None,
-        description="hotel ID for hotel booking. Null if not provided."
-    )
-
-    flight_id: Optional[str] = Field(
-        default=None,
-        description="flight ID for flight booking. Null if not provided."
-    )
 
     star_rating : Optional[int] = Field(
         default = None,
@@ -258,8 +249,8 @@ def router(state: GraphState) -> dict:
 
     "flight_date": data.get("flight_date") or state.get("flight_date"),
 
-    "hotel_id": data.get("hotel_id") or state.get("hotel_id"),
-    "flight_id": data.get("flight_id") or state.get("flight_id"),
+    "hotel_id": state.get("hotel_id"),
+    "flight_id": state.get("flight_id"),
     "booking_confirmed": booking_confirmed_this_turn or state.get("booking_confirmed", False),
 
     "hotel_budget": data.get("hotel_budget") or state.get("hotel_budget"),
@@ -420,8 +411,16 @@ async def hotel_node(state: GraphState) -> dict:
             resolved_hotel_id = cache[1]["hotelID"]
         elif "third" in message and len(cache)>=3:
             resolved_hotel_id = cache[2]["hotelID"]
+        else:
+            for hotel in cache:
+                if hotel.get("name") and hotel["name"].lower() in message:
+                    resolved_hotel_id = hotel["hotelID"]
 
-        
+        adjusted_hotel_budget = state.get("hotel_budget")
+        if state.get("budget_adjustment") == "lower" and adjusted_hotel_budget:
+            adjusted_hotel_budget = max(1, int(adjusted_hotel_budget*0.7))
+        elif state.get("budget_adjustment") == "higher" and adjusted_hotel_budget:
+            adjusted_hotel_budget = int(adjusted_hotel_budget*1.3)
         if state["sub_action"] == "book":
                 missing = []
                 if not resolved_hotel_id:
@@ -456,6 +455,15 @@ async def hotel_node(state: GraphState) -> dict:
                 SystemMessage(content=(
                     "You are the hotel booking agent. "
                     "Use the available tools to search,list, or book hotels according to the user's input. "
+                    "CRITICAL: for any request asking what hotels are available, searching, or listing hotels, "
+                    "you MUST call search_hotel or list_all_hotels THIS turn, even if similar hotels were "
+                    "discussed earlier in the conversation. Never answer a hotel availability question from "
+                    "memory of earlier messages - always call the tool fresh, since only a fresh tool call "
+                    "updates the system's hotel cache that later booking steps depend on. If the tool returns "
+                    "no results, say so honestly instead of inventing hotel names, prices, or IDs. "
+                    "If a city (or any other filter like budget or star rating) is mentioned, use search_hotel - "
+                    "list_all_hotels takes no filters and returns hotels from every city, so only use it when the "
+                    "user genuinely wants to browse everything with no city/budget/rating mentioned at all. "
                     "If the user has given an input about hotels but with mispellings, wrong formats and other errors, find similar flight information according to it and ask the user if it's correct ,if not ask them to try again"
                     "Never invent a hotel_id, it must come from a prior search or list result. "
                     "If required hotel booking details are missing, then ask the user for them instead of guessing"
@@ -472,23 +480,25 @@ async def hotel_node(state: GraphState) -> dict:
                 if tool_call["name"] == "book_hotel" and resolved_hotel_id:
                     args["hotel_id"] = resolved_hotel_id
                 result = _parse_mcp_result(await matching_tool.ainvoke(args))
-                if isinstance(result,list):
-                    if result and isinstance(result[0], dict) and result[0].get("error"):
-                        return {
-                            "hotel_id":resolved_hotel_id,
-                            "response_text": result[0]["message"],
-                            "flight_results": [],
-                            "hotel_results": []
-                            }
-                    return {
-                    "hotel_id":resolved_hotel_id,
-                    "hotel_results":result,
-                    "hotel_search_cache":result,
-                    "flight_results":[],
-                    "response_text":""
+                error_message = _extract_mcp_error(result)
+                if error_message:
+                    return{
+                        "hotel_id":resolved_hotel_id,
+                        "hotel_results":[],
+                        "flight_results":[],
+                        "response_text":f"I couldn't complete that request - {error_message}"
                     }
-                if isinstance(result,dict) and result.get("error"):
-                    return {"hotel_id":resolved_hotel_id,"hotel_results":[],"flight_results":[],"response_text":"I couldn't complete that request- the hotel service returned an error. Please try again or rephrase your search"}
+                if isinstance(result,list):
+                    return {
+                        "hotel_id":resolved_hotel_id,
+                        "hotel_budget":adjusted_hotel_budget,
+                        "budget_adjustment":None,
+                        "hotel_results":result,
+                        "hotel_search_cache":result,
+                        "flight_results":[],
+                        "response_text":""
+                    }
+                
                 return {
                 "hotel_id":resolved_hotel_id,
                 "booking_confirmed":False,
@@ -512,6 +522,12 @@ async def flight_node(state: GraphState) -> dict:
             resolved_flight_id = cache[1]["flightId"]
         elif "third" in message and len(cache) >= 3:
             resolved_flight_id = cache[2]["flightId"]
+
+        adjusted_flight_budget = state.get("flight_budget")
+        if state.get("budget_adjustment") == "lower" and adjusted_flight_budget:
+            adjusted_flight_budget = max(1,int(adjusted_flight_budget*0.7))
+        elif state.get("budget_adjustment") == "higher" and adjusted_flight_budget:
+            adjusted_flight_budget = int(adjusted_flight_budget*1.3)
 
         if state.get("sub_action") == "book":
             missing = []
@@ -552,6 +568,12 @@ async def flight_node(state: GraphState) -> dict:
                 SystemMessage(content=(
                     "You are the flight booking agent. "
                     "Use the available tools to list, search, or book flights according to the user's input. "
+                    "CRITICAL: for any request asking what flights are available, searching, or listing flights, "
+                    "you MUST call search_flights or get_all_flights THIS turn, even if similar flights were "
+                    "discussed earlier in the conversation. Never answer a flight availability question from "
+                    "memory of earlier messages - always call the tool fresh, since only a fresh tool call "
+                    "updates the system's flight cache that later booking steps depend on. If the tool returns "
+                    "no results, say so honestly instead of inventing airlines, prices, or IDs. "
                     "If the user has given an input about flights but with misspellings, wrong formats, or other "
                     "errors, find the closest matching flight information and ask the user to confirm it before "
                     "proceeding; if there's no reasonable match, ask them to try again. "
@@ -570,30 +592,35 @@ async def flight_node(state: GraphState) -> dict:
                 args = dict(tool_call["args"])
                 if tool_call["name"] == "book_flight" and resolved_flight_id:
                     args["flight_id"] = resolved_flight_id
-
+                if tool_call["name"] == "search_flights" and adjusted_flight_budget:
+                    args["flight_budget"] = adjusted_flight_budget
+                
                 result = _parse_mcp_result(await matching_tool.ainvoke(args))
+                error_message = _extract_mcp_error(result)
 
+                if error_message:
+                    return{
+                        "flight_id":resolved_flight_id,
+                        "hotel_results":[],
+                        "flight_results":[],
+                        "response_text":f"I couldn't complete that request-{error_message}"
+                    }
                 if isinstance(result, list):
                     return {
                         "flight_id": resolved_flight_id,
+                        "flight_budget":adjusted_flight_budget,
+                        "budget_adjustment":None,
                         "hotel_results": [],
                         "flight_results": result,
-                        "flight_search_cache": result,
-                        "response_text": "",
-                    }
-
-                if isinstance(result, dict) and result.get("error"):
-                    return {
-                        "flight_id": resolved_flight_id,
-                        "hotel_results": [], "flight_results": [],
-                        "response_text": "I couldn't complete that request — the flight service returned an error. Please try again or rephrase your search.",
-                    }
-
-                return {
-                    "flight_id": resolved_flight_id,
-                    "booking_confirmed": False,
-                    "hotel_results": [], "flight_results": [],
-                    "response_text": str(result),
+                        "flight_search_cache":result,
+                        "response_text":"",
+                        }
+                return{
+                    "flight_id":resolved_flight_id,
+                    "booking_confirmed":False,
+                    "hotel_results":[],
+                    "flight_results":[],
+                    "response_text":str(result),
                 }
 
             return {"flight_id": resolved_flight_id, "response_text": response.content}
@@ -625,15 +652,16 @@ async def weather_node(state:GraphState)->dict:
                 args = dict(tool_call["args"])
                 raw_result = await matching_tool.ainvoke(args)
                 result = _parse_mcp_result(raw_result)
-
-                if isinstance(result,dict) and result.get("error"):
+                error_message = _extract_mcp_error(result)
+                if error_message:
                     return{
                         "weather_results":[],
-                        "response_text":result.get("message","I couldn't get the weather for that city.")
+                        "response_text":f"I couldn't get the weather for that city - {error_message}"
                     }
+                
                 return{
                     "weather_results":[result] if isinstance(result,dict) else result,
-                    "response_text":"",
+                    "response_text": "",
                 }
             return {"response_text":response.content}
     except Exception:
@@ -665,11 +693,11 @@ async def activities_node(state:GraphState)->dict:
                 args = dict(tool_call["args"])
                 raw_result = await matching_tool.ainvoke(args)
                 result = _parse_mcp_result(raw_result)
-
-                if isinstance(result,dict) and result.get("error"):
-                    return{
+                error_message = _extract_mcp_error(result)
+                if error_message:
+                    return {
                         "activity_results":[],
-                        "response_text":result.get("message","I couldn't find activities for that city")
+                        "response_text":f"I couldn't find activities for that city - {error_message}"
                     }
                 return{
                     "activity_results":result if isinstance(result,list) else [],
@@ -706,10 +734,11 @@ async def transport_node(state:GraphState)-> dict:
                 args = dict(tool_call["args"])
                 raw_result = await matching_tool.ainvoke(args)
                 result = _parse_mcp_result(raw_result)
-                if isinstance(result,dict) and result.get("error"):
-                    return {
+                error_message = _extract_mcp_error(result)
+                if error_message:
+                    return{
                         "transport_results":[],
-                        "response_text":result.get("message","I couldn't find directions for that route."),
+                        "response_text":f"I couldn't find directions for that route {error_message}",
                     }
                 return{
                     "transport_results":[result] if isinstance(result,dict) else result,
