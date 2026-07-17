@@ -48,7 +48,7 @@ User: "show me all flights"
 intent = flight
 sub_action = list_all
 
-User: "book flight F456 for Jane Smith with:
+User: "book a flight on 2026-02-19 in Pacific Cathay airlines for John Smith;
 email:jane.smith@example.com , 
 flying-type: economy, 
 date-of-birth:2009/1/7, 
@@ -57,15 +57,15 @@ nationality:Sri Lankan
 "
 intent = flight
 sub_action = book
+airline = Pacific Cathay,
+passenger_names = John Smith
 passenger_emails = jane.smith@example.com
-passenger_names = Jane Smith
 flying_type = economy
 date_of_birth = 2009/1/7
 passport_number = xxxxxxxxxx
 nationality = Sri Lankan
-flight_id = F456
 
-User: "find me flights from Thailand to Malaysia on 2024-3-4"
+User: "find me flights from Thailand to Malaysia"
 intent = flight
 sub_action = search
 origin = null
@@ -73,7 +73,7 @@ destination = null
 origin_country = Thailand
 destination_country = Malaysia
 flight_budget = null
-flight_date = 2024-3-4
+flight_date = null
 
 User: "find me flights from XXX to ZZZ under $200"
 intent: flight
@@ -113,7 +113,7 @@ check_out = null
 star_rating = null
 hotel_budget = null
 
-User : "Are there any Shangri la hotels in Philippines"
+User : "Are there any Shangri la hotels in Philippines?"
 intent = hotel
 sub_action = search
 city = Philippines
@@ -167,17 +167,19 @@ check_out = null
 star_rating = null
 hotel_budget = 200
 
-User = "book a hotel suite room in Shangri la on 2026-3-4 to 2026-3-8 for Jessica Roa and email JessyR@example.com"
+
+User = "book a hotel suite room in Shangri la PUS 1 on 2026-3-4 to 2026-3-8 for Jessica Roa and my email is JessyR@example.com"
 
 intent = hotel
 sub_action = search
-hotel_id = null
-hotel_name = Shangri la
+hotel_name = Shangri la PUS 1
 check_in = 2026-3-4
 check_out = 2026-3-8
 guest_name = Jessica Roa
 guest_email = JessyR@example.com
-room_type = suite,
+room_type = suite
+hotel_id = null
+
 
 Weather examples:
 
@@ -206,22 +208,6 @@ intent = activities
 sub_action = general
 city = Rome
 activity_type = null
-
-Local transport examples:
-
-User: "how do I get from my hotel to the Eiffel Tower"
-intent = transport
-sub_action = general
-transport_from = my hotel
-transport_to = Eiffel Tower
-transport_mode = null
-
-User: "walking directions from Central Station to the old town"
-intent = transport
-sub_action = general
-transport_from = Central Station
-transport_to = old town
-transport_mode = walking
 
 Itinerary examples:
 

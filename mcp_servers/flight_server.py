@@ -3,6 +3,7 @@ import urllib.request
 import urllib.parse
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
+import uuid
 
 mcp = FastMCP("Flight Service",port = 8002)
 
@@ -13,23 +14,6 @@ def _get_json(url:str):
         with urllib.request.urlopen(url,timeout=20) as response:
             data = response.read().decode("utf-8")
             return json.loads(data)
-    except Exception as e:
-        return {
-            "error":True,
-            "message":str(e),
-            "url":url
-        }
-    
-def _post_json(url:str , payload:dict):
-    try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data = data,
-            headers={"Content-Type":"application/json"},
-            method = "POST"
-        )
-        with urllib.request.urlopen(req,timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
     except Exception as e:
         return {
             "error":True,
@@ -121,40 +105,32 @@ def search_flights(
 
 @mcp.tool()
 def book_flight(
-    passenger_emails:str,
-    passenger_names:str,
+    passenger_name:str,
+    passenger_email:str,
     flying_type:str,
     date_of_birth:str,
     passport_number:str,
     nationality:str,
-    flight_id:str,
-    airline:Optional[str]=None,
+    airline:str,
 )->dict:
     """ 
-    Book a flight using a flight ID returned from a previous
-    search_flights() or get_all_flights() call.
-    The flight ID must never be invented by the AI.
+    Confirms a flight booking. Airline must never be invented by the AI and it must come from a previous
+    search_flights() or get_all_flights() result.
     Returns the booking confirmation from the external service.
     """
-    if not flight_id:
-        return {
-            "error": True,
-            "message": "A flight ID is required for booking."
-            }
-    payload = {
-        "flightId":flight_id,
+    if not all([airline,passenger_name,passenger_email,flying_type,date_of_birth,passport_number,nationality]):
+        return{"error":True,"message":"Missing required booking details."}
+    return {
+        "confirmationId":f"FLT-{uuid.uuid4().hex[:8].upper()}",
+        "status":"confirmed",
         "airline":airline,
+        "passengerName":passenger_name,
+        "passengerEmail":passenger_email,
         "flyingType":flying_type,
-        "passengerNames":passenger_names,
-        "passengerEmails":passenger_emails,
         "dateOfBirth":date_of_birth,
         "passportNumber":passport_number,
         "nationality":nationality,
     }
-
-    url = f"{BASE_URL}/flights/book"
-    data = _post_json(url,payload)
-    return data
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")

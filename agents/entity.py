@@ -2,7 +2,7 @@ from typing import List, Optional, TypedDict
 
 class GraphState(TypedDict):
     messages: List[str]
-
+    response_text:str
     intent: str
     sub_action: str
 
@@ -32,8 +32,6 @@ class GraphState(TypedDict):
     airline:Optional[str]
 
     room_type:Optional[str]
-    hotel_id:Optional[str]
-    flight_id:Optional[str]
     star_rating:Optional[int]
 
     hotel_budget:Optional[int] 
@@ -63,6 +61,10 @@ class GraphState(TypedDict):
     transport_node : Optional[str]
     transport_results : List[dict]
 
+    selected_hotel:Optional[dict]
+    selected_flight:Optional[dict]
+
+    pending_booking:Optional[dict]
 
    
 

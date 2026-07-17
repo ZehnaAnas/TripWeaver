@@ -4,6 +4,7 @@ from typing import Optional
 import json
 import urllib.request
 import urllib.error
+import uuid
 
 mcp = FastMCP("Hotel Service",port=8001)
 
@@ -23,29 +24,11 @@ def _get_json(url:str):
                 "message":str(e),
                 "url":url
                 }
-def _post_json(url:str, payload:dict):
-    try:
-        data = json.dumps(payload).encode("utf-8")
-        req= urllib.request.Request(
-            url,data = data,
-            headers = {"Content-Type":"application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req,timeout=20) as response:
-            details = response.read().decode("utf-8")
-            return json.loads(details)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8",errors="replace")
-        return {"error":True,"status":e.code,"message":body,"url":url}
-    except Exception as e:
-        return {"error":True,
-                "message":str(e),
-                "url":url}
     
 def _hotel_details(data):
     """
     Convert full hotel response into only:
-    hotel id, hotel name, description, facilities, available rooms,price ,address,city,star rating.
+    hotel name, description, facilities, available rooms,price ,address,city,star rating.
 
     Support both:
     1. {"hotels":[...]}
@@ -60,14 +43,13 @@ def _hotel_details(data):
     
     return [
         {
-        "hotelID":hotel.get("_id"),
         "address":hotel.get("address"),
         "amenities":hotel.get("amenities"),
         "availableRooms":hotel.get("availableRooms"),
         "city":hotel.get("city"),
         "description":hotel.get("description"),
         "pricePerNight":hotel.get("pricePerNight"),
-        "name":hotel.get("name"),
+        "hotelName":hotel.get("name"),
         "starRating":hotel.get("starRating"),
         "cityCode" :hotel.get("airportCode")
     }
@@ -77,7 +59,7 @@ def _hotel_details(data):
 @mcp.tool()
 def list_all_hotels()-> list[dict] | dict:
     """
-    Retrieve all the hotels with only hotel id, name, description, facilities,price,available rooms, star rating, address and city
+    Retrieve all the hotels with only hotel name, description, facilities,price,available rooms, star rating, address and city
     """
     url = f"{BASE_URL}/hotels"
     data = _get_json(url)
@@ -110,7 +92,7 @@ def search_hotel(
     if city_code:
         params["cityCode"] = city_code
     if hotel_name:
-        params["name"] = hotel_name
+        params["hotelName"] = hotel_name
     if check_in:
         params["checkIn"] = check_in
     if check_out:
@@ -127,30 +109,31 @@ def search_hotel(
 
 @mcp.tool()
 def book_hotel(
-    hotel_id:str,
+    hotel_name:str,
     check_in:str,
     check_out:str,
     guest_name:str,
     guest_email:str,
     room_type:str,
-    hotel_name:Optional[str]=None,
+    hotel_id:Optional[str] = None,
 ):
     """ 
     Book a hotel using a hotel ID returned from a previous
     search_hotel() or list_all_hotels() call.
     
-    The hotel ID must never be invented by the AI.
+    The hotel_name must never be invented by the AI.
     
     Returns the booking confirmation from the external service.
     """
-    if not hotel_id:
+    if not all([hotel_name,check_in,check_out,guest_name,guest_email,room_type]):
         return {
             "error": True,
-            "message": "Hotel ID is required for booking."
+            "message": "Missing required booking details."
             }
-    payload = {
-        
-        "hotelId":hotel_id,
+    
+    return {
+        "confirmationId":f"HTL-{uuid.uuid4().hex[:8].upper()}",
+        "status":"confirmed",
         "hotelName":hotel_name,
         "checkInDate":check_in,
         "checkOutDate":check_out,
@@ -158,11 +141,6 @@ def book_hotel(
         "guestEmail":guest_email,
         "roomType":room_type,
     }
-
-    url = f"{BASE_URL}/hotels/book"
-    data = _post_json(url,payload)
-    return data
-
 if __name__ == "__main__":
     mcp.run("streamable-http")
     
