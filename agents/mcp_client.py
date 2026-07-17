@@ -9,16 +9,12 @@ mcp_client = MultiServerMCPClient({
         "url":"http://localhost:8002/mcp",
         "transport":"streamable_http"
     },
-    "activities":{
+    "places":{
         "url":"http://localhost:8003/mcp",
         "transport":"streamable_http"
     },
-    "transport":{
-        "url":"http://localhost:8004/mcp",
-        "transport":"streamable_http"
-    },
     "weather":{
-        "url":"http://localhost:8005/mcp",
+        "url":"http://localhost:8004/mcp",
         "transport":"streamable_http"
     }
 })

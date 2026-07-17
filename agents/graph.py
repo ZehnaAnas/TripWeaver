@@ -1,6 +1,6 @@
 ﻿from langgraph.graph import StateGraph, START, END
 
-from .nodes import router, hotel_node, flight_node, unknown_node, generate_response, route_after_extraction,weather_node,activities_node,transport_node,itinerary_node
+from .nodes import router, hotel_node, flight_node, unknown_node, generate_response, route_after_extraction,weather_node,places_node,itinerary_node
 from .entity import GraphState
 
 
@@ -11,8 +11,7 @@ def build_graph() -> StateGraph:
     builder.add_node("hotel_node", hotel_node)
     builder.add_node("flight_node", flight_node)
     builder.add_node("weather_node",weather_node)
-    builder.add_node("activities_node",activities_node)
-    builder.add_node("transport_node",transport_node)
+    builder.add_node("places_node",places_node)
     builder.add_node("itinerary_node",itinerary_node)
     builder.add_node("unknown_node", unknown_node)
     builder.add_node("generate_response", generate_response)
@@ -26,8 +25,7 @@ def build_graph() -> StateGraph:
             "hotel": "hotel_node",
             "flight": "flight_node",
             "weather": "weather_node",
-            "activities":"activities_node",
-            "transport":"transport_node",
+            "activities":"places_node",
             "itinerary":"itinerary_node",
             "unknown": "unknown_node",
         },
@@ -36,8 +34,7 @@ def build_graph() -> StateGraph:
     builder.add_edge("hotel_node", "generate_response")
     builder.add_edge("flight_node", "generate_response")
     builder.add_edge("weather_node","generate_response")
-    builder.add_edge("activities_node","generate_response")
-    builder.add_edge("transport_node","generate_response")
+    builder.add_edge("places_node","generate_response")
     builder.add_edge("itinerary_node","generate_response")
     builder.add_edge("unknown_node", "generate_response")
     builder.add_edge("generate_response", END)

@@ -10,6 +10,7 @@ from .mcp_utils import _parse_mcp_result,_extract_mcp_error
 import traceback
 import re
 from datetime import datetime
+import difflib
 
 VALID_CITIES = [
     'Bali', 'Bangkok', 'Beijing', 'Busan', 'Cebu', 'Delhi', 'Guangzhou', 
@@ -46,8 +47,22 @@ CITY_TO_AIRPORT = {
     'Tokyo': 'NRT'
 }
 
+COUNTRY_TO_CITIES =  {"indonesia": ["Bali", "Jakarta"],
+    "thailand": ["Bangkok", "Phuket"],
+    "china": ["Beijing", "Guangzhou", "Shanghai"],
+    "south korea": ["Busan", "Seoul"],
+    "korea": ["Busan", "Seoul"],
+    "philippines": ["Cebu", "Manila"],
+    "india": ["Delhi", "Mumbai"],
+    "vietnam": ["Hanoi", "Ho Chi Minh City"],
+    "malaysia": ["Kuala Lumpur", "Penang"],
+    "japan": ["Osaka", "Tokyo"],
+    "singapore": ["Singapore"],
+}
+
 def validate_and_resolve_city(input_city: str) -> tuple[Optional[str], Optional[str]]:
     """
+    Try to figure out which city the user means.
     Returns (resolved_city_name, error_message).
     If resolved_city_name is not None, validation succeeded.
     Otherwise, error_message contains a polite correction/suggestion.
@@ -81,14 +96,14 @@ def validate_and_resolve_city(input_city: str) -> tuple[Optional[str], Optional[
     if similar_matches:
         similar_str = ", ".join(similar_matches)
         err = (
-            f"I couldn't find a supported city matching '{input_city}'. "
+            f"Sorry!.I couldn't find a supported city matching '{input_city}'. "
             f"Did you mean one of these: {similar_str}?\n\n"
             f"We only support these 20 destinations:\n{cities_str}.\n\n"
             "Please type the exact city name."
         )
     else:
         err = (
-            f"I couldn't find a supported city matching '{input_city}'. "
+            f"Sorry! I couldn't find a supported city matching '{input_city}'. "
             f"We only support the following 20 destinations:\n{cities_str}.\n\n"
             "Please type the exact city name."
         )
@@ -96,50 +111,64 @@ def validate_and_resolve_city(input_city: str) -> tuple[Optional[str], Optional[
 
 def validate_and_resolve_flight_location(input_loc: str) -> tuple[Optional[str], Optional[str]]:
     """
-    Returns (resolved_airport_or_city, error_message).
+    Try to figure out which city the user means.
+
+    Returns two things:
+    - resolved_city: the exact city name if we found a match, otherwise None
+    - message: something to say back to the user (a suggestion, a country
+      question, or a full list) - only used when resolved_city is None,
+      OR when we want to guide them (like the country case)
     """
     if not input_loc:
         return None, None
         
     cleaned = input_loc.strip()
+    cleaned_lower = cleaned.lower()
     
-    # 1. Exact airport code match (case-insensitive)
-    for code in VALID_AIRPORTS:
-        if code.lower() == cleaned.lower():
-            return code.upper(), None
-            
-    # 2. Exact city match (case-insensitive)
+    city_list_text = ""
     for city in VALID_CITIES:
-        if city.lower() == cleaned.lower():
+        code = CITY_TO_AIRPORT[city]
+        city_list_text += f"{city} ({code}),"
+    city_list_text = city_list_text.rstrip(",")
+   
+    if cleaned_lower in COUNTRY_TO_CITIES:
+        cities_in_country = COUNTRY_TO_CITIES[cleaned_lower]
+        cities_text = "and".join(cities_in_country)
+        message = (
+            f"Sure! Here are the cities with flights available in {cleaned.title()}:{cities_text}."
+            "Which city would you like to visit, and which city are you coming from, also tell me the date you plan to fly if possible so I can check if flights are available for you?"
+        )
+        return None,message
+    
+    for city in VALID_CITIES:
+        if city.lower() == cleaned_lower:
             return city, None
-            
-    # 3. Partial/similar matches in cities
-    similar_matches = []
+
+    for city, code in CITY_TO_AIRPORT.items():
+        if code.lower() == cleaned_lower:
+            return city, None
+
+    partial_matches = []
     for city in VALID_CITIES:
-        if cleaned.lower() in city.lower() or city.lower() in cleaned.lower():
-            similar_matches.append(city)
-            
-    if len(similar_matches) == 1:
-        return similar_matches[0], None
-        
-    # Build polite error message
-    cities_with_codes = [f"{city} ({CITY_TO_AIRPORT[city]})" for city in VALID_CITIES]
-    cities_str = ", ".join(cities_with_codes)
-    if similar_matches:
-        similar_str = ", ".join(similar_matches)
-        err = (
-            f"I couldn't find a supported airport or city matching '{input_loc}'. "
-            f"Did you mean one of these cities: {similar_str}?\n\n"
-            f"We support these 20 destinations:\n{cities_str}.\n\n"
-            "Please specify the exact city or 3-letter airport code."
+        if cleaned_lower in city.lower():
+            partial_matches.append(city)
+    if len(partial_matches) == 1:
+        return partial_matches[0], None
+
+    close_matches = difflib.get_close_matches(cleaned, VALID_CITIES, n=3, cutoff=0.6)
+    if len(close_matches) == 1:
+        return close_matches[0], None
+    if len(close_matches) > 1:
+        suggestions = ", ".join(close_matches)
+        message = (
+            f"Sorry, I didn't recognize '{input_loc}' — did you mean {suggestions}?\n\n"
+            f"Cities I support: {city_list_text}."
+            f"Please choose one from here."
         )
-    else:
-        err = (
-            f"I couldn't find a supported airport or city matching '{input_loc}'. "
-            f"We only support the following 20 destinations:\n{cities_str}.\n\n"
-            "Please specify the exact city or 3-letter airport code."
-        )
-    return None, err
+        return None, message
+
+    message = f"Sorry, I couldn't find a place called '{input_loc}'.\n\nCities I support: {city_list_text}. If you find a city you are looking for from here, please let me know"
+    return None, message
 
 def validate_date(date_str: str, field_name: str) -> tuple[bool, Optional[str]]:
     """
@@ -174,6 +203,45 @@ def validate_email(email_str: str, field_name: str) -> tuple[bool, Optional[str]
         )
     return True, None
 
+def _looks_like_booking_continuation(message: str) -> bool:
+    """
+    Guess whether this message is continuing an in-progress booking
+    (like answering "yes" or giving booking details) versus starting
+    something completely new.
+    """
+    msg = message.strip().lower()
+
+    if msg == "":
+        return False
+
+    # Common confirmation words
+    confirmation_words = ["yes", "no", "confirm", "cancel", "proceed"]
+    if msg in confirmation_words:
+        return True
+
+    # Ordinal words like "book the first one"
+    ordinal_words = ["first", "second", "third", "fourth", "fifth", "last",
+                      "1st", "2nd", "3rd", "4th", "5th"]
+    for word in ordinal_words:
+        if word in msg:
+            return True
+
+    # An email address is a strong sign they're filling in booking details
+    if "@" in msg:
+        return True
+
+    # A message with several commas is probably a details dump like:
+    # "Zehna, zehna@email.com, 2026-04-03, 2026-04-06, single"
+    if msg.count(",") >= 2:
+        return True
+
+    # A date in YYYY-MM-DD format
+    date_pattern = re.search(r"\d{4}-\d{1,2}-\d{1,2}", msg)
+    if date_pattern:
+        return True
+
+
+    return False
 def resolve_hotel_name_from_cache_or_search(hotel_name_query: str, cache: list[dict], available_hotels: list[dict] = None) -> tuple[Optional[str], Optional[str]]:
     """
     Returns (resolved_exact_name, error_message).
@@ -228,15 +296,16 @@ def resolve_hotel_name_from_cache_or_search(hotel_name_query: str, cache: list[d
         "Please check the spelling or enter a hotel name from your search results."
     )
 
+
 def resolve_flight_id_from_airline(airline_query: str, cache: list[dict], all_flights: list[dict] = None) -> tuple[Optional[str], Optional[str]]:
     """
     Returns (resolved_flight_id, error_message).
     """
     if not airline_query:
         return None, None
-    
+
     query = airline_query.strip().lower()
-    
+
     # Try to find match in cache first
     candidates = []
     for f in cache:
@@ -245,20 +314,24 @@ def resolve_flight_id_from_airline(airline_query: str, cache: list[dict], all_fl
         if f_airline and f_id:
             if query in f_airline.lower() or f_airline.lower() in query:
                 candidates.append(f)
-                
+
     if len(candidates) == 1:
         return candidates[0]["flightId"], None
     elif len(candidates) > 1:
         lines = []
         for c in candidates:
-            lines.append(f"- Flight {c.get('flightNumber', 'N/A')} by {c.get('airline')} ({c.get('departureTime', 'N/A')} - {c.get('arrivalTime', 'N/A')}, Price: {c.get('price')})")
+            lines.append(
+                f"- Flight {c.get('flightNumber', 'N/A')} by {c.get('airline')} "
+                f"on {c.get('flightDate', 'N/A')} "
+                f"({c.get('departureTime', 'N/A')} - {c.get('arrivalTime', 'N/A')}, Price: {c.get('price')})"
+            )
         options_str = "\n".join(lines)
         return None, (
             f"I found multiple flight options for '{airline_query}' in your search results:\n"
             f"{options_str}\n\n"
             "Please specify more details or type the exact flight details."
         )
-        
+
     # If not in cache, check all_flights if provided
     if all_flights:
         candidates = []
@@ -273,27 +346,49 @@ def resolve_flight_id_from_airline(airline_query: str, cache: list[dict], all_fl
         elif len(candidates) > 1:
             lines = []
             for c in candidates:
-                lines.append(f"- Flight {c.get('flightNumber', 'N/A')} by {c.get('airline')} from {c.get('originCity') or c.get('originAirport')} to {c.get('destinationCity') or c.get('destinationAirport')} ({c.get('departureTime')} - {c.get('arrivalTime')}, Price: {c.get('price')})")
+                lines.append(
+                    f"- Flight {c.get('flightNumber', 'N/A')} by {c.get('airline')} "
+                    f"on {c.get('flightDate', 'N/A')} "
+                    f"from {c.get('originCity') or c.get('originAirport')} to {c.get('destinationCity') or c.get('destinationAirport')} "
+                    f"({c.get('departureTime')} - {c.get('arrivalTime')}, Price: {c.get('price')})"
+                )
             options_str = "\n".join(lines)
             return None, (
                 f"I found multiple flight options for '{airline_query}':\n"
                 f"{options_str}\n\n"
                 "Please specify your flight or type the exact flight details."
             )
-            
+
     return None, (
         f"I couldn't find any flights operated by '{airline_query}'. "
         "Please verify the airline name or search for flights first."
     )
+def _is_decline(message: str) -> bool:
+    """
+    Detects an explicit "no, don't book this" from the user - the FIRST
+    signal that something's wrong, before we know whether they want to
+    cancel entirely or just fix a detail.
+    """
+    msg = message.strip().lower()
+    return msg in ["no", "cancel", "decline", "nevermind", "never mind", "stop",
+                   "don't book it", "dont book it", "nope", "nah"]
 
 
-
+def _is_cancel_confirmation(message: str) -> bool:
+    """
+    Detects a clear "yes, actually cancel it" - used ONLY as the second
+    step, after we've already asked "cancel, or just fix something?".
+    This is deliberately narrow (a real yes/cancel word) so that if the
+    user instead starts giving corrected details, we don't misread that
+    as a cancellation.
+    """
+    msg = message.strip().lower()
+    return msg in ["yes", "cancel", "cancel it", "yes cancel", "yes cancel it", "confirm cancel"]
 class TravelExtraction(BaseModel):
-    intent: Literal["hotel", "flight","weather","activities","transport","itinerary","unknown"] = Field(
+    intent: Literal["hotel", "flight","weather","activities","itinerary","unknown"] = Field(
         default="unknown",
         description= "Main user intent: hotel, flight, weather (forecast for a city), "
-            "activities (things to do/attractions in a city), transport (local "
-            "directions between two places), itinerary (combine a previously "
+            "activities (things to do/attractions in a city), itinerary (combine a previously "
             "searched hotel and flight into one plan), or unknown."
     )
 
@@ -429,21 +524,6 @@ class TravelExtraction(BaseModel):
         description="Category of activity requested. One of: museums, attractions, nature, nightlife, art, historic. Null if not specified."
     )
 
-    transport_from : Optional[str] = Field(
-        default = None,
-        description="Starting point for a local transport/directions request within a city, e.g. a hotel name or landmark. Null if not provided."
-    )
-
-    transport_to : Optional[str] = Field(
-        default=None,
-        description="Destination point for a local transport/directions request within a city. Null if not provided."
-    )
-
-    transport_mode : Optional[Literal["driving","walking","cycling"]] = Field(
-        default = None,
-        description="Mode of local transport requested. Null if not specified (defaults to driving)"
-    )
-
     budget_adjustment : Optional[Literal["lower","higher"]] = Field(
         default=None,
         description=( "Set to 'lower' if the user wants cheaper options than a previous search "
@@ -468,7 +548,7 @@ def router(state: GraphState) -> dict:
             invocation_messages.append(AIMessage(content=history_messages[i + 1]))
     invocation_messages.append(HumanMessage(content=user_message))
 
-    booking_confirmed_this_turn = user_message.lower() in ["yes","confirm","proceed"]
+    booking_confirmed_this_turn = user_message.strip().lower() in ["yes","confirm","proceed"]
     try:
         extracted = travel_extractor.invoke(invocation_messages)
         data = extracted.dict()
@@ -506,15 +586,33 @@ def router(state: GraphState) -> dict:
         }
 
     resolved_intent = data.get("intent") or state.get("last_intent","unknown") 
-    if resolved_intent == "unknown" and state.get("last_intent") in ("hotel","flight","weather","activities","transport"):
+    if resolved_intent == "unknown" and state.get("last_intent") in ("hotel","flight","weather","activities"):
         resolved_intent = state["last_intent"]
+        
+    was_booking = state.get("sub_action") == "book"
+    extractor_found_new_intent = data.get("intent") not in (None, "unknown")
+    continuing_booking = _looks_like_booking_continuation(user_message)
+
+    give_up_on_booking = was_booking and not extractor_found_new_intent and not continuing_booking
+
+    if give_up_on_booking:
+        resolved_intent = "unknown"
+
+    if give_up_on_booking:
+        final_sub_action = "general"
+        final_booking_confirmed = False
+    else:
+        if data.get("sub_action") in (None, "general") and state.get("sub_action") == "book":
+            final_sub_action = "book"
+        else:
+            final_sub_action = data.get("sub_action") or state.get("sub_action", "general")
+        final_booking_confirmed = booking_confirmed_this_turn or state.get("booking_confirmed", False)
 
     return {
 
     "intent": resolved_intent,
-    "sub_action":  "book" if data.get("sub_action") in (None, "general") and state.get("sub_action") == "book"
-    else data.get("sub_action") or state.get("sub_action", "general"),
-    "last_intent":resolved_intent if resolved_intent in ("hotel","flight","weather","activities","transport") else state.get("last_intent"),
+    "sub_action":  final_sub_action,
+    "last_intent":resolved_intent if resolved_intent in ("hotel","flight","weather","activities") else state.get("last_intent"),
 
     "city": data.get("city") or state.get("city"),
     "city_code": data.get("city_code") or state.get("city_code"),
@@ -529,7 +627,7 @@ def router(state: GraphState) -> dict:
 
     "hotel_id": state.get("hotel_id"),
     "flight_id": state.get("flight_id"),
-    "booking_confirmed": booking_confirmed_this_turn or state.get("booking_confirmed", False),
+    "booking_confirmed": final_booking_confirmed,
 
     "hotel_budget": data.get("hotel_budget") or state.get("hotel_budget"),
     "flight_budget": data.get("flight_budget") or state.get("flight_budget"),
@@ -554,11 +652,8 @@ def router(state: GraphState) -> dict:
     "hotel_name": data.get("hotel_name") or state.get("hotel_name"),
 
     "weather_date": data.get("weather_date") or state.get("weather_date"),
-    "activity_type": data.get("activity_type") or state.get("activity_type"),
-    "transport_from": data.get("transport_from") or state.get("transport_from"),
-    "transport_to": data.get("transport_to") or state.get("transport_to"),
-    "transport_mode": data.get("transport_mode") or state.get("transport_mode"),
-
+    "activity_type": data.get("activity_type"),
+   
     "activity_status":"ROUTING",
     "tool_status": state.get("tool_status"),
 
@@ -566,7 +661,6 @@ def router(state: GraphState) -> dict:
     "flight_results": [],
     "weather_results": [],
     "activity_results": [],
-    "transport_results": [],
     "hotel_search_cache": state.get("hotel_search_cache", []),
     "flight_search_cache": state.get("flight_search_cache", []),
 
@@ -670,20 +764,12 @@ def _format_activity(place:dict)->str:
     category = place.get("category","attraction")
     return f"{name} ({category})"
 
-def _format_transport(route:dict)->str:
-    origin = route.get("origin","unknown")
-    destination = route.get("destination","unknown")
-    mode = route.get("mode","driving")
-    distance = route.get("distance_km","N/A")
-    duration = route.get("duration_minutes","N/A")
-    return f"{origin} \u2192 {destination} by {mode} : {distance} km, ~{duration} min"
 
 async def hotel_node(state: GraphState) -> dict:
     try:
         message = state["messages"][-1].lower()
         cache = state.get("hotel_search_cache", [])
         resolved_hotel_name = state.get("hotel_name")
-
         if not resolved_hotel_name or state.get("sub_action") == "book":
             if "first" in message and len(cache) >= 1:
                 resolved_hotel_name = cache[0].get("hotelName") or cache[0].get("name")
@@ -697,6 +783,61 @@ async def hotel_node(state: GraphState) -> dict:
                     if h_name and h_name.lower() in message:
                         resolved_hotel_name = h_name
                         break
+
+        if state.get("sub_action") == "book" and resolved_hotel_name:
+            already_verified = any(
+                (h.get("hotelName") or h.get("name") or "").lower() == resolved_hotel_name.lower()
+                for h in cache
+            )
+
+            if not already_verified:
+                matches = []
+                try:
+                    async with mcp_client.session("hotel") as session:
+                        hotel_tools = await load_mcp_tools(session)
+                        search_tool = next((t for t in hotel_tools if t.name == "search_hotel"), None)
+                        if search_tool is not None:
+                            search_args = {"hotel_name": resolved_hotel_name}
+                            if state.get("city"):
+                                search_args["city"] = state["city"]
+                            raw = await search_tool.ainvoke(search_args)
+                            parsed = _parse_mcp_result(raw)
+                            if isinstance(parsed, list):
+                                matches = parsed
+                except Exception:
+                    matches = []
+
+                if len(matches) == 0:
+                    city_text = f" in {state['city']}" if state.get("city") else ""
+                    return {
+                        "activity_status": "CLARIFYING",
+                        "response_text": (
+                            f"I couldn't find a hotel called \"{resolved_hotel_name}\"{city_text}. "
+                            "Could you double-check the name, or would you like me to list hotels there instead?"
+                        ),
+                    }
+
+                if len(matches) == 1:
+                    resolved_hotel_name = matches[0].get("hotelName") or matches[0].get("name")
+                    cache = matches
+
+                if len(matches) > 1:
+                    option_lines = []
+                    for h in matches:
+                        name = h.get("hotelName") or h.get("name")
+                        stars = h.get("starRating", "N/A")
+                        price = h.get("pricePerNight", "N/A")
+                        rooms = h.get("availableRooms", "N/A")
+                        option_lines.append(f"- {name}: {stars} stars, USD {price}/night, {rooms} rooms available")
+                    return {
+                        "hotel_search_cache": matches,
+                        "activity_status": "CLARIFYING",
+                        "response_text": (
+                            f"I found a few hotels called \"{resolved_hotel_name}\":\n"
+                            + "\n".join(option_lines)
+                            + "\n\nWhich one would you like to book? You can name it exactly, or say \"the first one\", \"the second one\", etc."
+                        ),
+                    }
 
         check_in = state.get("check_in")
         if check_in:
@@ -735,11 +876,111 @@ async def hotel_node(state: GraphState) -> dict:
             }
 
         if state.get("sub_action") == "book":
+            if state.get("awaiting_cancel_decision"):
+                if _is_cancel_confirmation(state["messages"][-1]):
+                    return {
+                        "hotel_name": None,
+                        "guest_name": None,
+                        "guest_email": None,
+                        "check_in": None,
+                        "check_out": None,
+                        "room_type": None,
+                        "sub_action": "general",
+                        "last_intent": None,
+                        "booking_confirmed": False,
+                        "awaiting_cancel_decision": False,
+                        "hotel_results": [], "flight_results": [],
+                        "response_text": "Booking cancelled! Let me know if you have any other questions or need anything else.",
+                    }
+                return {
+                    "awaiting_cancel_decision": False,
+                    "activity_status": "CLARIFYING",
+                    "response_text": "Got it! Please tell me the correct details and I'll update your booking.",
+                }
             if not resolved_hotel_name:
                 if not cache:
-                    return {"activity_status": "CLARIFYING", "response_text": "Which hotel would you like to book, and in which city? Search first, e.g. \"hotels in Bangkok\", then tell me which one."}
+                    known_city = state.get("city")
+                    known_city_code = state.get("city_code")
+                    if not known_city and not known_city_code:
+                        for candidate_city in VALID_CITIES:
+                            if candidate_city.lower() in message:
+                                known_city = candidate_city
+                                break
+ 
+                    if not known_city and not known_city_code:
+                        return {
+                        "activity_status": "CLARIFYING",
+                        "response_text": (
+                            "Happy to help you book a hotel! First, let's find one - "
+                            "which city would you like to stay in? "
+                            "(You can also tell me your check-in/check-out dates, budget, "
+                            "or star rating now if you'd like - those are optional and just narrow the results.)"
+                        ),
+                    }
+                    resolved_city = known_city
+                    if known_city:
+                        resolved_city, err = validate_and_resolve_city(known_city)
+                        if err:
+                            return {"activity_status": "CLARIFYING", "response_text": err}
+ 
+                    search_results = []
+                    try:
+                        async with mcp_client.session("hotel") as session:
+                            hotel_tools = await load_mcp_tools(session)
+                            search_tool = next((t for t in hotel_tools if t.name == "search_hotel"), None)
+                            if search_tool is not None:
+                                search_args = {}
+                                if resolved_city:
+                                    search_args["city"] = resolved_city
+                                if known_city_code:
+                                    search_args["city_code"] = known_city_code
+                                if state.get("check_in"):
+                                    search_args["check_in"] = state["check_in"]
+                                if state.get("check_out"):
+                                    search_args["check_out"] = state["check_out"]
+                                if state.get("hotel_budget"):
+                                    search_args["hotel_budget"] = state["hotel_budget"]
+                                if state.get("star_rating"):
+                                    search_args["star_rating"] = state["star_rating"]
+ 
+                                raw = await search_tool.ainvoke(search_args)
+                                parsed = _parse_mcp_result(raw)
+ 
+                                error_message = _extract_mcp_error(parsed)
+                                if error_message:
+                                    return {
+                                        "city": resolved_city,
+                                        "activity_status": "CLARIFYING",
+                                        "response_text": f"I couldn't complete that search — {error_message}",
+                                    }
+ 
+                                if isinstance(parsed, list):
+                                    search_results = parsed
+                    except Exception:
+                        search_results = []
+ 
+                    if not search_results:
+                        city_text = resolved_city or known_city_code or "that city"
+                        return {
+                            "city": resolved_city,
+                            "activity_status": "CLARIFYING",
+                            "response_text": f"I couldn't find any hotels in \"{city_text}\". Try a nearby major city, e.g. Bangkok, Seoul, Tokyo, Singapore.",
+                        }
+ 
+                    lines = [_format_hotel(h) for h in search_results[:5]]
+                    count = len(search_results)
+                    return {
+                        "city": resolved_city,
+                        "hotel_search_cache": search_results,
+                        "hotel_results": search_results,
+                        "activity_status": "CLARIFYING",
+                        "response_text": (
+                            f"I found {count} hotel option{'s' if count != 1 else ''}:\n"
+                            + "\n".join(lines)
+                            + "\n\nWhich one would you like to book? You can name it exactly, or say \"the first one\", \"the second one\", etc."
+                        ),
+                    }
                 return {"activity_status": "CLARIFYING", "response_text": "Which hotel would you like to book? Please give the exact hotel name (e.g. \"Shangri-La PUS 1\") or say \"the first one\"/\"the second one\"."}
-
             missing = []
             if not state.get("guest_name"):
                 missing.append("guest name (e.g. \"Jane Doe\")")
@@ -753,13 +994,27 @@ async def hotel_node(state: GraphState) -> dict:
                 missing.append(f"room type ({', '.join(VALID_ROOM_TYPES)})")
 
             if missing:
+                if len(missing) == 1:
+                    missing_text = missing[0]
+                else:
+                    missing_text = ", ".join(missing[:-1]) + f", and {missing[-1]}"
+
                 return {
                     "hotel_name": resolved_hotel_name,
                     "activity_status": "CLARIFYING",
-                    "response_text": f"Booking {resolved_hotel_name}. I still need:\n" + "\n".join(f"- {m}" for m in missing),
+                    "response_text": f"Great choice — {resolved_hotel_name}! To book it, could you share your {missing_text}?",
                 }
 
             if not state.get("booking_confirmed"):
+                if _is_decline(state["messages"][-1]):
+                    return {
+                        "awaiting_cancel_decision": True,
+                        "activity_status": "CLARIFYING",
+                        "response_text": (
+                            "No problem! Would you like to cancel this booking, or just fix a detail? "
+                            "If something's wrong, just tell me the correct information and I'll update it."
+                        ),
+                    }
                 return {
                     "hotel_name": resolved_hotel_name,
                     "activity_status": "CLARIFYING",
@@ -811,22 +1066,47 @@ async def hotel_node(state: GraphState) -> dict:
 
                 confirmation = result[0] if isinstance(result, list) and len(result) == 1 else result
                 if isinstance(confirmation, dict) and confirmation.get("confirmationId"):
-                    result = confirmation
+                    city_for_followup = state.get("city") or "that area"
+                    price_line = ""
+                    matching_hotel = None
+                    for h in cache:
+                        name = h.get("hotelName") or h.get("name")
+                        if name and name.lower() == resolved_hotel_name.lower():
+                            matching_hotel = h
+                            break
+ 
+                    if matching_hotel and matching_hotel.get("pricePerNight") is not None:
+                        try:
+                            nights = (
+                                datetime.strptime(confirmation["checkOutDate"], "%Y-%m-%d")
+                                - datetime.strptime(confirmation["checkInDate"], "%Y-%m-%d")
+                            ).days
+                            if nights > 0:
+                                price_per_night = matching_hotel["pricePerNight"]
+                                total_price = nights * price_per_night
+                                price_line = (
+                                    f"Price: USD {price_per_night}/night x {nights} night{'s' if nights != 1 else ''} "
+                                    f"= USD {total_price} total\n"
+                                )
+                        except ValueError:
+                            pass
+ 
                     return {
                         "hotel_name": resolved_hotel_name,
                         "booking_confirmed": False,
                         "hotel_results": [], "flight_results": [],
                         "response_text": (
                             f"🎉 You're booked!\n\n"
-                            f"Confirmation ID: {result['confirmationId']}\n"
-                            f"Hotel: {result['hotelName']}\n"
-                            f"Guest: {result['guestName']} ({result['guestEmail']})\n"
-                            f"Check-in: {result['checkInDate']} → Check-out: {result['checkOutDate']}\n"
-                            f"Room: {result['roomType']}\n\n"
-                            "The hotel management will contact you shortly with payment details."
+                            f"Confirmation ID: {confirmation['confirmationId']}\n"
+                            f"Hotel: {confirmation['hotelName']}\n"
+                            f"Guest: {confirmation['guestName']} ({confirmation['guestEmail']})\n"
+                            f"Check-in: {confirmation['checkInDate']} → Check-out: {confirmation['checkOutDate']}\n"
+                            f"Room: {confirmation['roomType']}\n"
+                            f"{price_line}\n"
+                            f"Would you like to book a flight? Find places you would like to visit in {city_for_followup}? Or check the weather there?"
                         ),
+                        "traveling_to_city": state.get("city") or state.get("traveling_to_city"),
                     }
-
                 if isinstance(result, list):
                     if len(result) == 0 and (args.get("city")):
                         return {"hotel_results": [], "flight_results": [],
@@ -840,35 +1120,12 @@ async def hotel_node(state: GraphState) -> dict:
     except Exception:
         traceback.print_exc()
         return {"hotel_results": [], "flight_results": [], "response_text": "The hotel booking service is currently unavailable. Please try again shortly."}
-        
+    
 async def flight_node(state: GraphState) -> dict:
     try:
         message = state["messages"][-1].lower()
         resolved_flight_id = state.get("flight_id")
         cache = state.get("flight_search_cache", [])
-
-        origin = state.get("origin")
-        if origin:
-            resolved_origin, err = validate_and_resolve_flight_location(origin)
-            if err:
-                return {"activity_status": "CLARIFYING", "response_text": err}
-            state["origin"] = resolved_origin
-
-        destination = state.get("destination")
-        if destination:
-            resolved_dest, err = validate_and_resolve_flight_location(destination)
-            if err:
-                return {"activity_status": "CLARIFYING", "response_text": err}
-            state["destination"] = resolved_dest
-
-        if origin and destination:
-            resolved_orig, _ = validate_and_resolve_flight_location(origin)
-            resolved_dest, _ = validate_and_resolve_flight_location(destination)
-            if resolved_orig and resolved_dest and resolved_orig.lower() == resolved_dest.lower():
-                return {
-                    "activity_status": "CLARIFYING",
-                    "response_text": f"Your origin and destination cannot be the same city/airport ({origin}). Please choose a different destination."
-                }
 
         flight_date = state.get("flight_date")
         if flight_date:
@@ -905,9 +1162,9 @@ async def flight_node(state: GraphState) -> dict:
 
         adjusted_flight_budget = state.get("flight_budget")
         if state.get("budget_adjustment") == "lower" and adjusted_flight_budget:
-            adjusted_flight_budget = max(1,int(adjusted_flight_budget*0.7))
+            adjusted_flight_budget = max(1, int(adjusted_flight_budget * 0.7))
         elif state.get("budget_adjustment") == "higher" and adjusted_flight_budget:
-            adjusted_flight_budget = int(adjusted_flight_budget*1.3)
+            adjusted_flight_budget = int(adjusted_flight_budget * 1.3)
 
         resolved_flight_id = state.get("flight_id")
         if "first" in message and len(cache) >= 1:
@@ -919,6 +1176,36 @@ async def flight_node(state: GraphState) -> dict:
 
         airline = state.get("airline")
         if state.get("sub_action") == "book":
+            if state.get("awaiting_cancel_decision"):
+                if _is_cancel_confirmation(state["messages"][-1]):
+                    return {
+                        "flight_id": None,
+                        "airline": None,
+                        "passenger_name": None,
+                        "passenger_email": None,
+                        "flying_type": None,
+                        "date_of_birth": None,
+                        "passport_number": None,
+                        "nationality": None,
+                        "sub_action": "general",
+                        "last_intent": None,
+                        "booking_confirmed": False,
+                        "awaiting_cancel_decision": False,
+                        "hotel_results": [], "flight_results": [],
+                        "response_text": "Booking cancelled! Let me know if you have any other questions or need anything else.",
+                    }
+                state["awaiting_cancel_decision"] = False
+            if not resolved_flight_id and not airline and not cache:
+                return {
+                    "activity_status": "CLARIFYING",
+                    "response_text": (
+                        "Happy to help you book a flight! First, let's find one - "
+                        "which city are you flying from, and which city are you flying to? "
+                        "(You can also tell me a date, budget, or preferred departure time now "
+                        "if you'd like - those are optional and just narrow the results.)"
+                    ),
+                }
+
             if not resolved_flight_id and airline:
                 resolved_id, err = resolve_flight_id_from_airline(airline, cache)
                 if err:
@@ -935,30 +1222,49 @@ async def flight_node(state: GraphState) -> dict:
                 if resolved_id:
                     resolved_flight_id = resolved_id
 
+            if not resolved_flight_id and not airline and cache:
+                return {
+                    "activity_status": "CLARIFYING",
+                    "response_text": "Which flight would you like to book? You can name the airline (e.g. \"the Japan Airlines one\") or say its position (e.g. \"the first one\").",
+                }
+
             missing = []
             if not resolved_flight_id and not airline:
                 missing.append("the airline or flight you'd like (e.g. \"the Japan Airlines flight\" or name the exact flight number)")
             if not state.get("passenger_email"):
-                missing.append("passenger email")
+                missing.append("passenger email (e.g. \"jane@example.com\")")
             if not state.get("passenger_name"):
-                missing.append("passenger name")
+                missing.append("passenger name (e.g. \"Jane Doe\")")
             if not state.get("flying_type"):
-                missing.append("flying type")
+                missing.append("flying type (economy, business, or first class)")
             if not state.get("date_of_birth"):
-                missing.append("date of birth")
+                missing.append("date of birth (e.g. \"1995-08-20\")")
             if not state.get("passport_number"):
-                missing.append("passport number")
+                missing.append("passport number (e.g. \"N1234567\")")
             if not state.get("nationality"):
-                missing.append("nationality")
+                missing.append("nationality (e.g. \"Sri Lankan\")")
 
             if missing:
+                if len(missing) == 1:
+                    missing_text = missing[0]
+                else:
+                    missing_text = ", ".join(missing[:-1]) + f", and {missing[-1]}"
                 return {
                     "flight_id": resolved_flight_id,
                     "activity_status": "CLARIFYING",
-                    "response_text": "I need the following information before booking:\n" + "\n".join([f"- {m}" for m in missing]),
+                    "response_text": f"Great choice — {airline}! To book it, could you share your {missing_text}?",
                 }
 
             if not state.get("booking_confirmed"):
+                if _is_decline(state["messages"][-1]):
+                    return {
+                        "awaiting_cancel_decision": True,
+                        "activity_status": "CLARIFYING",
+                        "response_text": (
+                            "No problem! Would you like to cancel this booking, or just fix a detail? "
+                            "If something's wrong, just tell me the correct information and I'll update it."
+                        ),
+                    }
                 details = (
                     f"- Airline: {airline or 'Resolved'}\n"
                     f"- Flight ID: {resolved_flight_id}\n"
@@ -973,8 +1279,7 @@ async def flight_node(state: GraphState) -> dict:
                     "flight_id": resolved_flight_id,
                     "activity_status": "CLARIFYING",
                     "response_text": f"Please confirm these booking details:\n{details}\nReply with 'Yes' if you'd like me to complete the booking.",
-                } 
-
+                }
         async with mcp_client.session("flight") as session:
             flight_tools = await load_mcp_tools(session)
             agent = llm.bind_tools(flight_tools)
@@ -987,11 +1292,11 @@ async def flight_node(state: GraphState) -> dict:
                     "you MUST call search_flights or get_all_flights THIS turn, even if similar flights were "
                     "discussed earlier in the conversation. Never answer a flight availability question from "
                     "memory of earlier messages - always call the tool fresh, since only a fresh tool call "
-                    "updates the system's flight cache that later booking steps depend on. If the tool returns "
-                    "no results, say so honestly instead of inventing airlines, prices, or IDs. "
-                    "If the user has given an input about flights but with misspellings, wrong formats, or other "
-                    "errors, find the closest matching flight information and ask the user to confirm it before "
-                    "proceeding; if there's no reasonable match, ask them to try again. "
+                    "updates the system's flight cache that later booking steps depend on. "
+                    "The search_flights tool accepts city names, airport codes, OR country names for both "
+                    "origin and destination - just pass through whatever the user said, don't try to convert "
+                    "it yourself. If the tool returns an error, relay its message honestly instead of inventing "
+                    "airlines, prices, or IDs. "
                     "Never invent a flight_id — it must come from a prior search or list result. "
                     "If required booking details are missing, ask the user for them instead of guessing. "
                     "Before confirming a booking, ask the user to confirm the details are correct."
@@ -1033,6 +1338,28 @@ async def flight_node(state: GraphState) -> dict:
 
                 confirmation = result[0] if isinstance(result, list) and len(result) == 1 else result
                 if isinstance(confirmation, dict) and confirmation.get("confirmationId"):
+                    matched_flight = None
+                    if resolved_flight_id:
+                        for f in cache:
+                            if f.get("flightId") == resolved_flight_id:
+                                matched_flight = f
+                                break
+                    if matched_flight is None and confirmation.get("airline"):
+                        for f in cache:
+                            if (f.get("airline") or "").lower() == confirmation["airline"].lower():
+                                matched_flight = f
+                                break
+ 
+                    price_line = ""
+                    flight_details_line = ""
+                    if matched_flight:
+                        if matched_flight.get("price") is not None:
+                            price_line = f"Price: USD {matched_flight['price']}\n"
+                        flight_date = matched_flight.get("flightDate", "N/A")
+                        departure_time = matched_flight.get("departureTime", "N/A")
+                        arrival_time = matched_flight.get("arrivalTime", "N/A")
+                        flight_details_line = f"Flight date: {flight_date} ({departure_time} → {arrival_time})\n"
+ 
                     return {
                         "flight_id": resolved_flight_id,
                         "booking_confirmed": False,
@@ -1041,11 +1368,34 @@ async def flight_node(state: GraphState) -> dict:
                             f"🎉 You're booked!\n\n"
                             f"Confirmation ID: {confirmation['confirmationId']}\n"
                             f"Airline: {confirmation['airline']}\n"
+                            f"{flight_details_line}"
                             f"Passenger: {confirmation['passengerName']} ({confirmation['passengerEmail']})\n"
                             f"Class: {confirmation['flyingType']}\n"
-                            f"Passport: {confirmation['passportNumber']} ({confirmation['nationality']})\n\n"
-                            "The airline will contact you shortly with payment/ticketing details."
+                            f"Passport: {confirmation['passportNumber']} ({confirmation['nationality']})\n"
+                            f"{price_line}\n"
+                            f"Would you like to book a flight? Find places to visit? Or check the weather there?"
                         ),
+                        "traveling_to_city": (matched_flight.get("destinationCity") if matched_flight else None) or state.get("traveling_to_city"),
+                    }
+                if isinstance(confirmation, dict) and "flights" in confirmation:
+                    flight_list = confirmation["flights"]
+                    note = confirmation.get("note", "")
+                    formatted_lines = [_format_flight(f) for f in flight_list[:5]]
+                    count = len(flight_list)
+                    response_text = (
+                        f"I found {count} flight option{'s' if count != 1 else ''}:\n"
+                        + "\n".join(formatted_lines)
+                    )
+                    if note:
+                        response_text += f"\n\n{note}"
+                    return {
+                        "flight_id": resolved_flight_id,
+                        "flight_budget": adjusted_flight_budget,
+                        "budget_adjustment": None,
+                        "hotel_results": [],
+                        "flight_results": flight_list,
+                        "flight_search_cache": flight_list,
+                        "response_text": response_text,
                     }
 
                 if isinstance(result, list):
@@ -1074,10 +1424,8 @@ async def flight_node(state: GraphState) -> dict:
             "hotel_results": [], "flight_results": [],
             "response_text": "Flight search is temporarily unavailable — please try again shortly.",
         }
-    
-async def weather_node(state:GraphState)->dict:
+async def weather_node(state: GraphState) -> dict:
     try:
-        # Input Validations
         city = state.get("city")
         if city:
             resolved_city, err = validate_and_resolve_city(city)
@@ -1100,41 +1448,162 @@ async def weather_node(state:GraphState)->dict:
 
             messages = [
                 SystemMessage(content=(
-                    "You are the weather agent. Use the available tool to get a forecast for the city the user is asking about"
+                    "You are the weather agent. Use the available tool to get a forecast for the city the user is asking about. "
                     "If no city is given, ask for one instead of guessing."
                 )),
                 *[HumanMessage(content=m) for m in state["messages"]]
             ]
             response = await agent.ainvoke(messages)
+
             if response.tool_calls:
                 tool_call = response.tool_calls[0]
                 matching_tool = next(t for t in weather_tools if t.name == tool_call["name"])
                 args = dict(tool_call["args"])
                 raw_result = await matching_tool.ainvoke(args)
                 result = _parse_mcp_result(raw_result)
-                error_message = _extract_mcp_error(result)
+
+                weather_data = result[0] if isinstance(result, list) and len(result) == 1 else result
+
+                error_message = _extract_mcp_error(weather_data)
                 if error_message:
-                    return{
-                        "weather_results":[],
-                        "response_text":f"I couldn't get the weather for that city - {error_message}"
+                    return {
+                        "weather_results": [],
+                        "response_text": f"I couldn't get the weather for that city - {error_message}"
                     }
-                
-                return{
-                    "weather_results":[result] if isinstance(result,dict) else result,
+
+                return {
+                    "weather_results": [weather_data] if isinstance(weather_data, dict) else (weather_data if isinstance(weather_data, list) else []),
                     "response_text": "",
                 }
-            return {"response_text":response.content}
+
+            return {"response_text": response.content}
     except Exception:
         traceback.print_exc()
         return {
-            "weather_results":[],
-            "response_text":"The weather service is currently unavailable. Please try again shortly."
+            "weather_results": [],
+            "response_text": "The weather service is currently unavailable. Please try again shortly."
         }
     
-async def activities_node(state:GraphState)->dict:
+async def places_node(state: GraphState) -> dict:
     try:
-        # Input Validations
-        city = state.get("city")
+        message = state["messages"][-1].lower()
+        cache = state.get("activity_search_cache", [])
+        planned = state.get("planned_activities", [])
+
+        # --- Handle "add X to my plan" ---
+        if ("add" in message and "plan" in message) or "add it" in message:
+            matched_place = None
+            for place in cache:
+                name = place.get("name", "")
+                if name and name.lower() in message:
+                    matched_place = place
+                    break
+            if not matched_place:
+                if "first" in message and len(cache) >= 1:
+                    matched_place = cache[0]
+                elif "second" in message and len(cache) >= 2:
+                    matched_place = cache[1]
+                elif "third" in message and len(cache) >= 3:
+                    matched_place = cache[2]
+
+            if matched_place:
+                already_planned = any(
+                    p.get("name") == matched_place.get("name") for p in planned
+                )
+                if not already_planned:
+                    planned = planned + [matched_place]
+                return {
+                    "planned_activities": planned,
+                    "activity_results": [],
+                    "response_text": (
+                        f"Added \"{matched_place.get('name')}\" to your plan! "
+                        f"You've got {len(planned)} thing{'s' if len(planned) != 1 else ''} planned so far. "
+                        "Want to add anything else, or hear more about one of them?"
+                    ),
+                }
+            if not cache:
+                return {
+                    "activity_results": [],
+                    "response_text": "Let's find some places to visit first! Search for places in a city, then tell me which one to add.",
+                }
+            return {
+                "activity_results": [],
+                "response_text": "Which place would you like to add? You can name it exactly, or say \"the first one\", etc.",
+            }
+
+        wants_to_see_plan = any(
+            phrase in message for phrase in ["what's on my plan", "whats on my plan", "show my plan", "my plan so far"]
+        )
+        if wants_to_see_plan:
+            if not planned:
+                return {
+                    "activity_results": [],
+                    "response_text": "You haven't added anything to your plan yet! Search for places to visit, then say \"add [name] to my plan\".",
+                }
+            lines = [f"- {p.get('name')}" for p in planned]
+            return {
+                "activity_results": [],
+                "response_text": "Here's your plan so far:\n" + "\n".join(lines),
+            }
+
+        wants_more_info = any(phrase in message for phrase in ["more info", "tell me more", "more about"])
+        if wants_more_info:
+            matched_place = None
+            for place in cache:
+                name = place.get("name", "")
+                if name and name.lower() in message:
+                    matched_place = place
+                    break
+            if not matched_place and cache:
+                if "first" in message and len(cache) >= 1:
+                    matched_place = cache[0]
+                elif "second" in message and len(cache) >= 2:
+                    matched_place = cache[1]
+                elif "third" in message and len(cache) >= 3:
+                    matched_place = cache[2]
+
+            place_name_for_lookup = matched_place.get("name") if matched_place else None
+            city_for_lookup = state.get("city") or state.get("traveling_to_city")
+
+            if not place_name_for_lookup:
+                return {
+                    "activity_results": [],
+                    "response_text": "Which place would you like more info on? Please name it exactly from the list I showed you.",
+                }
+
+            try:
+                async with mcp_client.session("places") as session:
+                    place_tools = await load_mcp_tools(session)
+                    details_tool = next((t for t in place_tools if t.name == "get_place_details"), None)
+                    if details_tool is not None:
+                        raw = await details_tool.ainvoke({
+                            "place_name": place_name_for_lookup,
+                            "city": city_for_lookup or "",
+                        })
+                        parsed = _parse_mcp_result(raw)
+                        info = parsed[0] if isinstance(parsed, list) and len(parsed) == 1 else parsed
+                        error_message = _extract_mcp_error(info)
+                        if error_message:
+                            return {
+                                "activity_results": [],
+                                "response_text": f"I couldn't find more info about {place_name_for_lookup} - {error_message}",
+                            }
+                        if isinstance(info, dict):
+                            return {
+                                "activity_results": [],
+                                "response_text": (
+                                    f"**{info.get('name')}**\n{info.get('description')}\n\n"
+                                    "Want to add this to your plan?"
+                                ),
+                            }
+            except Exception:
+                pass
+            return {
+                "activity_results": [],
+                "response_text": f"I couldn't find more info about {place_name_for_lookup} right now. Please try again shortly.",
+            }
+
+        city = state.get("city") or state.get("traveling_to_city")
         if city:
             resolved_city, err = validate_and_resolve_city(city)
             if err:
@@ -1142,85 +1611,60 @@ async def activities_node(state:GraphState)->dict:
                     "activity_status": "CLARIFYING",
                     "response_text": err
                 }
-            state["city"] = resolved_city
+            city = resolved_city
 
-        async with mcp_client.session("activities") as session:
-            activity_tools = await load_mcp_tools(session)
-            agent = llm.bind_tools(activity_tools)
+        async with mcp_client.session("places") as session:
+            place_tools = await load_mcp_tools(session)
+            agent = llm.bind_tools(place_tools)
 
+            city_hint = (
+                f"The user recently booked travel to {city} - use that city if they don't mention a different one. "
+                if city else ""
+            )
             messages = [
                 SystemMessage(content=(
-                    "You are the activities agent."
-                    "Use the available tool to find things to do in the city the user mentions"
-                    "Supported categories:museums,attractions,nature,nightlife,art,historic."
-                    "If no city is given, ask for one instead of guessing"
+                    "You are the places agent. Use search_places to find places to visit "
+                    "in the city the user mentions. Supported categories: museums, attractions, "
+                    "nature, nightlife, art, historic. Only set a category if the user specifically "
+                    "asked for one (e.g. 'museums in Paris') - for a general 'things to do' request, "
+                    "leave the category unset so you get a broad mix of results. "
+                    f"{city_hint}"
+                    "If no city is known at all, ask for one instead of guessing."
                 )),
                 *[HumanMessage(content=m) for m in state["messages"]],
             ]
             response = await agent.ainvoke(messages)
+
             if response.tool_calls:
                 tool_call = response.tool_calls[0]
-                matching_tool = next(t for t in activity_tools if t.name == tool_call["name"])
+                matching_tool = next(t for t in place_tools if t.name == tool_call["name"])
                 args = dict(tool_call["args"])
+                if tool_call["name"] == "search_places" and not args.get("city") and city:
+                    args["city"] = city
+
                 raw_result = await matching_tool.ainvoke(args)
                 result = _parse_mcp_result(raw_result)
                 error_message = _extract_mcp_error(result)
                 if error_message:
                     return {
-                        "activity_results":[],
-                        "response_text":f"I couldn't find activities for that city - {error_message}"
+                        "city": city,
+                        "activity_results": [],
+                        "response_text": f"I couldn't find places for that city - {error_message}"
                     }
-                return{
-                    "activity_results":result if isinstance(result,list) else [],
-                    "response_text":"",
+
+                places = result if isinstance(result, list) else []
+                return {
+                    "city": city,
+                    "activity_results": places,
+                    "activity_search_cache": places,
+                    "response_text": "",
                 }
-            return{"response_text":response.content}
+            return {"city": city, "response_text": response.content}
     except Exception:
         traceback.print_exc()
         return {
-            "activity_results":[],
-            "response_text":"The activities service is currently unavailable. Please try again shortly."
-        }
-    
-async def transport_node(state:GraphState)-> dict:
-    try:
-        async with mcp_client.session("transport") as session:
-            transport_tools = await load_mcp_tools(session)
-            agent = llm.bind_tools(transport_tools)
-
-            messages = [
-                SystemMessage(content=(
-                    "You are the local transport agent. "
-                    "Use the available tool to get directions between two places the user names (e.g. a hotel and an attraction)." \
-                    "Supported modes: driving, walking, cycling (default driving)." \
-                    "If either place is missing ask for it instead of guessing."
-                )),
-                *[HumanMessage(content=m) for m in state["messages"]],
-            ]
-            response = await agent.ainvoke(messages)
-
-            if response.tool_calls:
-                tool_call = response.tool_calls[0]
-                matching_tool = next(t for t in transport_tools if t.name == tool_call["name"])
-                args = dict(tool_call["args"])
-                raw_result = await matching_tool.ainvoke(args)
-                result = _parse_mcp_result(raw_result)
-                error_message = _extract_mcp_error(result)
-                if error_message:
-                    return{
-                        "transport_results":[],
-                        "response_text":f"I couldn't find directions for that route {error_message}",
-                    }
-                return{
-                    "transport_results":[result] if isinstance(result,dict) else result,
-                    "response_text":"",
-                }
-            return{"response_text":response.content}
-    except Exception:
-        traceback.print_exc()
-        return{
-            "transport_results":[],
-            "response_text":"The transport service is currently unavailable. Please try again shortly."
+            "activity_results": [],
+            "response_text": "The places service is currently unavailable. Please try again shortly."
         }
     
 def itinerary_node(state:GraphState)->dict:
@@ -1291,7 +1735,6 @@ def unknown_node(state: GraphState) -> dict:
         }
 
 
-
 def generate_response(state: GraphState) -> dict:
     if state.get("response_text") is not None and state["response_text"] != "":
         return {
@@ -1302,7 +1745,6 @@ def generate_response(state: GraphState) -> dict:
     flight_results = state.get("flight_results", [])
     weather_results = state.get("weather_results",[])
     activity_results = state.get("activity_results")
-    transport_results = state.get("transport_results",[])
 
     if hotel_results:
         count = len(hotel_results)
@@ -1336,25 +1778,20 @@ def generate_response(state: GraphState) -> dict:
     
     if activity_results:
         count = len(activity_results)
+        activity_type = state.get("activity_type")
+        label = activity_type if activity_type else "things to do"
         lines = [_format_activity(place) for place in activity_results[:8]]
-        return{
-            "response_text":(
-                f"I found {count} thing {'s' if count !=1 else ''} to do:\n"
-                +"\n".join(lines)
+        return {
+            "response_text": (
+                f"Here are the {label} I found:\n" + "\n".join(lines)
+                + "\n\nSee something you like? Say \" add [name] to my plan\" to save it"
             )
         }
-    if transport_results:
-        lines = [_format_transport(route) for route in transport_results[:1]]
-        return {"response_text":"\n".join(lines)}
-    return {
-        "response_text": "I couldn't find matching travel options."
-    }
-
 
 def route_after_extraction(state: GraphState) -> str:
     intent = state.get("intent", "unknown")
 
-    if intent in ("hotel","flight","weather","activities","transport","itinerary"):
+    if intent in ("hotel","flight","weather","activities","itinerary"):
         return intent
     
     return "unknown"

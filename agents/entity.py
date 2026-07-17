@@ -25,6 +25,7 @@ class GraphState(TypedDict):
     flying_type:Optional[str]
     date_of_birth:Optional[str]
     passport_number:Optional[str]
+    flight_id:Optional[str]
 
     nationality:Optional[str]
     guest_name:Optional[str]
@@ -56,16 +57,14 @@ class GraphState(TypedDict):
     activity_type : Optional[str]
     activity_results : List[dict]
 
-    transport_from : Optional[str]
-    transport_to : Optional[str]
-    transport_node : Optional[str]
-    transport_results : List[dict]
-
     selected_hotel:Optional[dict]
     selected_flight:Optional[dict]
 
     pending_booking:Optional[dict]
+    
+    activity_search_cache: List[dict]
+    planned_activities: List[dict]
 
-   
-
+    awaiting_cancel_decision: bool
+    traveling_to_city: Optional[str]
     
