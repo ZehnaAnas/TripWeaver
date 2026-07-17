@@ -28,9 +28,9 @@ NODE_ACTIVITY_STATUS = {
     "hotel_node":"SEARCHING",
     "flight_node":"SEARCHING",
     "weather_node":"SEARCHING",
-    "activities_node":"SEARCHING",
-    "transport_node":"SEARCHING",
+    "places_node":"SEARCHING",
     "itinerary_node":"RESPONDING",
+    "unknown_node":"RESPONDING",
     "generate_response":"RESPONDING",
 }
 
@@ -45,8 +45,7 @@ NODE_LABELS = {
         "default":"Searching flight options..."
     },
     "weather_node":"Checking the weather...",
-    "activities_node":"Finding things to do...",
-    "transport_node":"Working out local directions...",
+    "places_node":"Finding things to do...",
     "itinerary_node":"Putting your itinerary together...",
     "unknown_node":"Thinking...",
     "generate_response":"Composing a response...",
@@ -134,10 +133,12 @@ def create_empty_state():
         "activity_type":None,
         "activity_results":[],
 
-        "transport_from":None,
-        "transport_to":None,
-        "transport_mode":None,
-        "transport_results":[]
+        "activity_search_cache": [],
+        "planned_activities": [],
+
+        "awaiting_cancel_decision": False,
+        "traveling_to_city": None,
+
     }
 
 def get_session_state(session_id:str)-> dict:
