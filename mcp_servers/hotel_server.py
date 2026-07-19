@@ -36,7 +36,24 @@ def _get_json(url: str):
     except Exception as e:
         return {"error": True, "message": str(e), "url": url}
 
-
+def _post_json(url: str, payload: dict):
+    """POSTs JSON and parses the response. Never raises - always returns
+    either the parsed data, or a small {"error": True, ...} dict."""
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return {"error": True, "status": e.code, "message": body, "url": url}
+    except Exception as e:
+        return {"error": True, "message": str(e), "url": url}
+    
 def _hotel_details(data):
     """
     Convert the full hotel response from Convex into just the fields we
@@ -167,9 +184,6 @@ def search_hotel(
     data = _get_json(url)
     hotels = _hotel_details(data)
 
-    # If we got a real list back (not an error), apply our own hotel-name,
-    # budget, and star filtering, and give a clear message if nothing is
-    # left afterwards.
     if isinstance(hotels, list):
         hotels = _apply_local_filters(
             hotels, hotel_budget=hotel_budget, star_rating=star_rating, hotel_name=hotel_name
@@ -193,7 +207,6 @@ def search_hotel(
 
     return hotels
 
-
 @mcp.tool()
 def book_hotel(
     hotel_name: str,
@@ -202,22 +215,16 @@ def book_hotel(
     guest_name: str,
     guest_email: str,
     room_type: str,
-):
+) -> dict:
     """
-    Confirms a hotel booking.
-
-    The hotel_name must never be invented by the AI - it must come from a
-    previous search_hotel() or list_all_hotels() call.
+    Book a hotel using a hotel name from a previous search_hotel() or
+    list_all_hotels() call. hotel_name must never be invented by the AI.
+    Returns the real booking confirmation from the external service.
     """
     if not all([hotel_name, check_in, check_out, guest_name, guest_email, room_type]):
-        return {
-            "error": True,
-            "message": "Missing required booking details.",
-        }
+        return {"error": True, "message": "Missing required booking details."}
 
-    return {
-        "confirmationId": f"HTL-{uuid.uuid4().hex[:8].upper()}",
-        "status": "confirmed",
+    payload = {
         "hotelName": hotel_name,
         "checkInDate": check_in,
         "checkOutDate": check_out,
@@ -225,7 +232,8 @@ def book_hotel(
         "guestEmail": guest_email,
         "roomType": room_type,
     }
-
+    url = f"{BASE_URL}/hotels/book"
+    return _post_json(url, payload)
 
 if __name__ == "__main__":
     mcp.run("streamable-http")

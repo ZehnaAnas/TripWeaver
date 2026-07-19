@@ -7,7 +7,7 @@ import uuid
 
 mcp = FastMCP("Flight Service", port=8002)
 
-BASE_URL = "https://standing-fish-574.convex.site/flights"
+BASE_URL = "https://standing-fish-574.convex.site"
 
 # This server runs as its own separate process, so it can't import anything
 # from agents/nodes.py - we keep our own small copy of the city data here.
@@ -28,34 +28,22 @@ CITY_TO_AIRPORT = {
     'Tokyo': 'NRT',
 }
 
-COUNTRY_TO_CITIES = {
-    "indonesia": ["Bali", "Jakarta"],
-    "thailand": ["Bangkok", "Phuket"],
-    "china": ["Beijing", "Guangzhou", "Shanghai"],
-    "south korea": ["Busan", "Seoul"],
-    "korea": ["Busan", "Seoul"],
-    "philippines": ["Cebu", "Manila"],
-    "india": ["Delhi", "Mumbai"],
-    "vietnam": ["Hanoi", "Ho Chi Minh City"],
-    "malaysia": ["Kuala Lumpur", "Penang"],
-    "japan": ["Osaka", "Tokyo"],
-    "singapore": ["Singapore"],
-}
-
 
 def resolve_location(text: str):
     """
-    Figures out what kind of place the user typed.
+    Resolves a city name or airport code to an exact match.
 
-    Returns a dictionary describing what we found:
+    Returns:
       {"type": "city", "airport_code": "SIN", "city_name": "Singapore"}
         -> a single, exact city or airport code was found
-
-      {"type": "country", "country_name": "Thailand", "cities": ["Bangkok", "Phuket"]}
-        -> a country name was found; here are the cities in it we support
-
       {"type": "unknown"}
         -> we couldn't match anything
+
+    Country names are deliberately NOT supported - only an exact city name
+    or a 3-letter airport code. This keeps every search unambiguous: one
+    origin, one destination, one clear result, rather than silently
+    expanding into several cities and reporting a confusing blanket
+    "nothing found" if some of them have no matching flights.
     """
     if not text:
         return {"type": "unknown"}
@@ -63,10 +51,6 @@ def resolve_location(text: str):
     cleaned = text.strip()
     cleaned_lower = cleaned.lower()
 
-    # Step 1: is it an exact city name? Check this FIRST - some places
-    # (like Singapore) are both a country name and a city name, and if
-    # someone just types "Singapore" they clearly mean the city, not
-    # "search every city in the country of Singapore".
     for city_name in VALID_CITIES:
         if city_name.lower() == cleaned_lower:
             return {
@@ -75,7 +59,6 @@ def resolve_location(text: str):
                 "city_name": city_name,
             }
 
-    # Step 2: is it an exact airport code? (also fine, totally optional)
     for city_name, code in CITY_TO_AIRPORT.items():
         if code.lower() == cleaned_lower:
             return {
@@ -84,16 +67,6 @@ def resolve_location(text: str):
                 "city_name": city_name,
             }
 
-    # Step 3: is it a country name?
-    if cleaned_lower in COUNTRY_TO_CITIES:
-        cities_in_country = COUNTRY_TO_CITIES[cleaned_lower]
-        return {
-            "type": "country",
-            "country_name": cleaned.title(),
-            "cities": cities_in_country,
-        }
-
-    # Step 4: nothing matched.
     return {"type": "unknown"}
 
 
@@ -108,7 +81,18 @@ def _get_json(url: str):
             "message": str(e),
             "url": url,
         }
-
+def _post_json(url: str, payload: dict):
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as e:
+        return {"error": True, "message": str(e), "url": url}
 
 def _only_airline_origin_destination(data):
     """
@@ -183,9 +167,7 @@ def _call_convex_search(origin_code: Optional[str], destination_code: Optional[s
     result = _only_airline_origin_destination(data)
     if not isinstance(result, list):
         return []
-
-    # Do our own budget filtering here, since Convex's own filtering can't
-    # be trusted to actually apply it.
+    
     if flight_budget:
         filtered_result = []
         for flight in result:
@@ -219,20 +201,16 @@ def search_flights(
     """
     Search flights between an origin and a destination.
 
-    Both origin and destination accept EITHER a city name (e.g. "Singapore",
-    "Kuala Lumpur") OR a 3-letter airport code (e.g. "SIN", "KUL") - city
-    names are preferred and don't need a code.
-
-    You can also pass a country name (e.g. "Thailand") instead of a specific
-    city - in that case, this searches every city we support in that country
-    and returns all matching flights, tagged by which city they're for.
+    Both origin and destination must be EITHER a city name (e.g.
+    "Singapore", "Kuala Lumpur") OR a 3-letter airport code (e.g. "SIN",
+    "KUL") - country names are not supported, only an exact city or code.
 
     flight_date, flight_budget, and departure_time (e.g. "06:30") are all
     optional filters - only apply them if the user actually asked for them.
 
-    If a city/country/code isn't recognized, this returns a helpful error
-    dict instead of failing silently - always check for an "error" key in
-    the result before treating it as a flight list.
+    If a city/code isn't recognized, this returns a helpful error dict
+    instead of failing silently - always check for an "error" key in the
+    result before treating it as a flight list.
     """
     origin_info = resolve_location(origin) if origin else {"type": "unknown"}
     destination_info = resolve_location(destination) if destination else {"type": "unknown"}
@@ -240,13 +218,13 @@ def search_flights(
     if origin and origin_info["type"] == "unknown":
         return {
             "error": True,
-            "message": f"I don't recognize '{origin}' as a city, airport code, or country. "
+            "message": f"I don't recognize '{origin}' as a city or airport code. "
                        f"Try a city like Singapore, Tokyo, or Bangkok.",
         }
     if destination and destination_info["type"] == "unknown":
         return {
             "error": True,
-            "message": f"I don't recognize '{destination}' as a city, airport code, or country. "
+            "message": f"I don't recognize '{destination}' as a city or airport code. "
                        f"Try a city like Singapore, Tokyo, or Bangkok.",
         }
 
@@ -261,50 +239,17 @@ def search_flights(
             "message": "Which city would you like to fly from?",
         }
 
-    origin_codes = []
-    if origin_info["type"] == "city":
-        origin_codes = [origin_info["airport_code"]]
-    elif origin_info["type"] == "country":
-        for city_name in origin_info["cities"]:
-            origin_codes.append(CITY_TO_AIRPORT[city_name])
-    else:
-        origin_codes = [None]
+    origin_code = origin_info["airport_code"] if origin_info["type"] == "city" else None
+    destination_code = destination_info["airport_code"] if destination_info["type"] == "city" else None
 
-    destination_codes = []
-    if destination_info["type"] == "city":
-        destination_codes = [destination_info["airport_code"]]
-    elif destination_info["type"] == "country":
-        for city_name in destination_info["cities"]:
-            destination_codes.append(CITY_TO_AIRPORT[city_name])
-    else:
-        destination_codes = [None]
+    all_results = _call_convex_search(origin_code, destination_code, flight_date, flight_budget)
 
-    all_results = []
-    for one_origin_code in origin_codes:
-        for one_destination_code in destination_codes:
-            results_for_this_pair = _call_convex_search(
-                one_origin_code, one_destination_code, flight_date, flight_budget
-            )
-            all_results.extend(results_for_this_pair)
-
-    # Apply the departure-time filter ourselves, locally - same reasoning
-    # as budget: we don't trust the external service to actually filter
-    # by this, even if it accepted the parameter.
     if departure_time and isinstance(all_results, list):
         all_results = [f for f in all_results if f.get("departureTime") == departure_time]
 
     if len(all_results) == 0:
-        if origin_info["type"] == "country":
-            searched_places = f"cities in {origin_info['country_name']}"
-        elif origin_info["type"] == "city":
-            searched_places = origin_info["city_name"]
-        else:
-            searched_places = "your starting point"
-
-        if destination_info["type"] == "country":
-            searched_places += f" to cities in {destination_info['country_name']}"
-        elif destination_info["type"] == "city":
-            searched_places += f" to {destination_info['city_name']}"
+        origin_text = origin_info.get("city_name", "your starting point")
+        destination_text = destination_info.get("city_name", "your destination")
 
         filter_notes = []
         if flight_budget:
@@ -315,63 +260,34 @@ def search_flights(
 
         return {
             "error": True,
-            "message": f"I couldn't find any flights from {searched_places} {filter_text} right now. "
-                       f"Try a different route, date, budget, or time.",
+            "message": f"I couldn't find any flights from {origin_text} to {destination_text} {filter_text} right now. "
+                       f"Try a different route, date, or budget.",
         }
-
-    origin_was_country = origin_info["type"] == "country"
-    destination_was_country = destination_info["type"] == "country"
-
-    if origin_was_country or destination_was_country:
-        if origin_was_country:
-            origin_cities_text = ", ".join(origin_info["cities"])
-        else:
-            origin_cities_text = origin_info.get("city_name", "your origin")
-
-        if destination_was_country:
-            destination_cities_text = ", ".join(destination_info["cities"])
-        else:
-            destination_cities_text = destination_info.get("city_name", "your destination")
-
-        note = (
-            f"These results cover multiple cities ({origin_cities_text} → "
-            f"{destination_cities_text}). Which city would you like to fly "
-            f"from, and which city would you like to fly to?"
-        )
-        return {"flights": all_results, "note": note}
 
     return all_results
 
 @mcp.tool()
 def book_flight(
+    flight_id: str,
     passenger_name: str,
     passenger_email: str,
     flying_type: str,
-    date_of_birth: str,
-    passport_number: str,
-    nationality: str,
-    airline: str,
 ) -> dict:
     """
-    Confirms a flight booking. Airline must never be invented by the AI -
-    it must come from a previous search_flights() or get_all_flights() result.
+    Book a flight using a flight_id from a previous search_flights() or
+    get_all_flights() result. flight_id must never be invented by the AI.
+    Returns the real booking confirmation from the external service.
     """
-    if not all([airline, passenger_name, passenger_email, flying_type,
-                date_of_birth, passport_number, nationality]):
+    if not all([flight_id, passenger_name, passenger_email, flying_type]):
         return {"error": True, "message": "Missing required booking details."}
 
-    return {
-        "confirmationId": f"FLT-{uuid.uuid4().hex[:8].upper()}",
-        "status": "confirmed",
-        "airline": airline,
-        "passengerName": passenger_name,
-        "passengerEmail": passenger_email,
+    payload = {
+        "flightId": flight_id,
+        "passengerNames": passenger_name,
+        "passengerEmails": passenger_email,
         "flyingType": flying_type,
-        "dateOfBirth": date_of_birth,
-        "passportNumber": passport_number,
-        "nationality": nationality,
     }
-
-
+    url = f"{BASE_URL}/flights/book"
+    return _post_json(url, payload)
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")

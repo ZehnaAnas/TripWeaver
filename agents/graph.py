@@ -1,4 +1,5 @@
 ﻿from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import InMemorySaver
 
 from .nodes import router, hotel_node, flight_node, unknown_node, generate_response, route_after_extraction,weather_node,places_node,itinerary_node
 from .entity import GraphState
@@ -42,4 +43,4 @@ def build_graph() -> StateGraph:
     return builder
 
 
-graph = build_graph().compile()
+graph = build_graph().compile(checkpointer=InMemorySaver())

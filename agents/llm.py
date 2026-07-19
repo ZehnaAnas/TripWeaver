@@ -15,7 +15,9 @@ if not OPENAI_API_KEY:
         "OPENAI_API_KEY is not set. Add it to your .env file before starting the app."
     )
 llm = ChatOpenAI(
-    model="gpt-4o-mini", 
-    api_key=OPENAI_API_KEY, 
-    temperature=0
+    model="gpt-4o-mini",
+    api_key=OPENAI_API_KEY,
+    temperature=1,
+    timeout=20,
+    max_retries=2,
 )

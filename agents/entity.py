@@ -1,6 +1,7 @@
 from typing import List, Optional, TypedDict
 
 class GraphState(TypedDict):
+    session_id :Optional[str]
     messages: List[str]
     response_text:str
     intent: str
@@ -23,11 +24,8 @@ class GraphState(TypedDict):
     booking_confirmed:bool
 
     flying_type:Optional[str]
-    date_of_birth:Optional[str]
-    passport_number:Optional[str]
     flight_id:Optional[str]
-
-    nationality:Optional[str]
+    
     guest_name:Optional[str]
     guest_email:Optional[str]
     airline:Optional[str]
@@ -37,9 +35,7 @@ class GraphState(TypedDict):
 
     hotel_budget:Optional[int] 
     flight_budget:Optional[int] 
-    origin_country:Optional[str] 
 
-    destination_country:Optional[str] 
     hotel_name: Optional[str]
 
     hotel_search_cache: List[dict]
