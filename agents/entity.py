@@ -1,66 +1,16 @@
-from typing import List, Optional, TypedDict
+from typing import Annotated, List, Optional, TypedDict
+from langgraph.graph.message import add_messages
+from langchain_core.messages import AnyMessage
+
 
 class GraphState(TypedDict):
-    session_id :Optional[str]
-    messages: List[str]
-    response_text:str
+    messages: Annotated[List[AnyMessage], add_messages]
+    
+    session_id: Optional[str]
     intent: str
-    sub_action: str
-
-    activity_status:str
-    tool_status:str
-
-    city: Optional[str]
-    city_code: Optional[str]
-    check_in: Optional[str]
-    check_out: Optional[str]
-
-    origin: Optional[str]
-    destination: Optional[str]
-    flight_date: Optional[str]
-
-    passenger_email:Optional[str]
-    passenger_name:Optional[str]
-    booking_confirmed:bool
-
-    flying_type:Optional[str]
-    flight_id:Optional[str]
-    
-    guest_name:Optional[str]
-    guest_email:Optional[str]
-    airline:Optional[str]
-
-    room_type:Optional[str]
-    star_rating:Optional[int]
-
-    hotel_budget:Optional[int] 
-    flight_budget:Optional[int] 
-
-    hotel_name: Optional[str]
-
-    hotel_search_cache: List[dict]
-    flight_search_cache : List[dict]
-
-    hotel_results : List[dict]
-    flight_results : List[dict]
-    response_text : str
-
-    last_intent : Optional[str]
-    budget_adjustment:Optional[str]
-    weather_date : Optional[str]
-
-    weather_results:List[dict]
-    activity_type : Optional[str]
-    activity_results : List[dict]
-
-    selected_hotel:Optional[dict]
-    selected_flight:Optional[dict]
-
-    pending_booking:Optional[dict]
-    
-    activity_search_cache: List[dict]
-    planned_activities: List[dict]
-
-    awaiting_cancel_decision: bool
-    traveling_to_city: Optional[str]
-    
+    response_text: str
+    activity_status: str
+    hotel_results: List[dict]
+    flight_results: List[dict]
+    weather_results: List[dict]
+    activity_results: List[dict]
