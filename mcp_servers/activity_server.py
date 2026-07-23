@@ -1,6 +1,5 @@
 import json
 import urllib.request
-import urllib.parse
 import urllib.error
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
@@ -8,22 +7,10 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-mcp = FastMCP("Place Service", port=8003)
+mcp = FastMCP("Activity Service", port=8003)
 
 TAVILY_URL = "https://api.tavily.com/search"
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-
-
-def _get_json(url: str):
-    try:
-        with urllib.request.urlopen(url, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        return {"error": True, "status": e.code, "message": body, "url": url}
-    except Exception as e:
-        return {"error": True, "message": str(e), "url": url}
-
 
 def _post_json(url: str, payload: dict):
     try:
@@ -43,23 +30,23 @@ def _post_json(url: str, payload: dict):
 
 
 @mcp.tool()
-def search_places(
+def search_activities(
     city: str,
-    place_type: Optional[str] = None,
+    activity_type: Optional[str] = None,
     limit: int = 10,
 ) -> list[dict] | dict:
     """
-    Find tourist places to visit in a city, using a Tavily web search.
+    Find activities and things to do in a city, using a web search.
 
-    `place_type` is free text and optional - e.g. "museums", "nightlife",
-    "family-friendly parks", "hidden gem cafes". If omitted, searches
-    generally for top tourist attractions.
+    `activity_type` is free text and optional - e.g. "museums", "nightlife",
+    "outdoor adventures", "family-friendly activities", "hidden gem cafes".
+    If omitted, searches generally for top things to do / activities.
 
-    Each result is a real web page about a place (its title, a short
+    Each result is a real web page about an activity (its title, a short
     description, and a source URL) rather than a single geocoded point -
-    treat the title as the place's name. To learn more about a specific
-    result afterwards, use get_place_details with that place's name and
-    the city.
+    treat the title as the activity's name. To learn more about a specific
+    result afterwards, use get_activity_details with that activity's name
+    and the city.
     """
     if not TAVILY_API_KEY:
         return {
@@ -73,7 +60,7 @@ def search_places(
     if not city:
         return {"error": True, "message": "A city name is required"}
 
-    query = f"best {place_type or 'tourist attractions'} to visit in {city}"
+    query = f"best {activity_type or 'things to do and activities'} in {city}"
     payload = {
         "api_key": TAVILY_API_KEY,
         "query": query,
@@ -89,7 +76,7 @@ def search_places(
 
     results = data.get("results", []) if isinstance(data, dict) else []
     if not results:
-        return {"error": True, "message": f"I couldn't find places to visit in '{city}'."}
+        return {"error": True, "message": f"I couldn't find activities to do in '{city}'."}
 
     return [
         {
@@ -103,14 +90,14 @@ def search_places(
 
 
 @mcp.tool()
-def get_place_details(place_name: str, city: str) -> dict:
+def get_activity_details(activity_name: str, city: str) -> dict:
     """
-    Get more information about a specific place, using a Tavily web search.
+    Get more information about a specific activity, using a web search.
 
-    Just needs the place's name and the city it's in (both of which you
-    already have from a previous search_places result or from what the
+    Just needs the activity's name and the city it's in (both of which you
+    already have from a previous search_activities result or from what the
     user typed). Use this when the user asks for more detail about a
-    specific place.
+    specific activity.
     """
     if not TAVILY_API_KEY:
         return {
@@ -121,10 +108,10 @@ def get_place_details(place_name: str, city: str) -> dict:
             ),
         }
 
-    if not place_name:
-        return {"error": True, "message": "A place name is required."}
+    if not activity_name:
+        return {"error": True, "message": "An activity name is required."}
 
-    query = f"{place_name} {city} tourist attraction"
+    query = f"{activity_name} {city} activity"
     payload = {
         "api_key": TAVILY_API_KEY,
         "query": query,
@@ -153,11 +140,11 @@ def get_place_details(place_name: str, city: str) -> dict:
     if not description:
         return {
             "error": True,
-            "message": f"I couldn't find more information about {place_name}.",
+            "message": f"I couldn't find more information about {activity_name}.",
         }
 
     return {
-        "name": place_name,
+        "name": activity_name,
         "description": description,
         "sourceUrl": source_url,
     }

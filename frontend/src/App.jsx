@@ -1,18 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Navbar from "./components/Navbar";
 import HistorySidebar from "./components/HistorySidebar";
 import ChatMessage from "./components/ChatMessage";
 import Hero from "./components/Hero";
-import { HotelCards, FlightCards } from "./components/ResultCards";
-import { StatusLine, QuickReplies } from "./components/StatusLine";
+import ActivityBoard from "./components/ActivityBoard";
+import QuickReplies from "./components/QuickReplies";
 import ChatInput from "./components/ChatInput";
 import { useConversations } from "./hooks/useConversations";
+import { useTheme } from "./hooks/useTheme";
 import { streamChat } from "./api/client";
 
 export default function App() {
   const {
     conversations,
-    activeId,
+    activeKey,
+    sessionId,
     messages,
     appendMessage,
     loadConversation,
@@ -21,64 +23,125 @@ export default function App() {
     deleteActiveConversation,
   } = useConversations();
 
+  const { theme, toggleTheme } = useTheme();
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [statusLabel, setStatusLabel] = useState("");
+  const [steps, setSteps] = useState([]);          // agent activity for this turn
+  const [streamingText, setStreamingText] = useState(""); // live tokens
   const [busy, setBusy] = useState(false);
   const [lastUserMessage, setLastUserMessage] = useState(null);
+
   const chatLogRef = useRef(null);
+  const abortRef = useRef(null);
+  const stepIdRef = useRef(0);
 
+  // Follow the tail of the conversation as tokens arrive, but only when the
+  // reader is already near the bottom - scrolling back to re-read an earlier
+  // plan shouldn't get yanked away mid-sentence.
   useEffect(() => {
-    if (chatLogRef.current) {
-      chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
-    }
-  }, [messages, statusLabel]);
+    const el = chatLogRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [messages, streamingText, steps]);
 
-  async function handleSend(text) {
-    setLastUserMessage(text);
-    appendMessage("user", text, activeId);
-    setBusy(true);
-    setStatusLabel("");
+  const handleSend = useCallback(
+    async (text) => {
+      if (busy) return;
 
-    let assistantText = "";
-    let firstTokenReceived = false;
-    let finalSessionId = null;
-    let finalHotels = null;
-    let finalFlights = null;
-    let erroredOut = false;
+      setLastUserMessage(text);
+      appendMessage("user", text, sessionId);
+      setBusy(true);
+      setSteps([]);
+      setStreamingText("");
 
-    await streamChat(text, activeId, (event) => {
-      switch (event.type) {
-        case "status":
-          setStatusLabel(event.label || "Working...");
-          break;
-        case "token":
-          if (!firstTokenReceived) {
-            firstTokenReceived = true;
-            setStatusLabel("");
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      let assistantText = "";
+      let firstTokenSeen = false;
+      let finalSessionId = null;
+      let resultKind = null;
+      let erroredOut = false;
+
+      await streamChat(
+        text,
+        sessionId,
+        (event) => {
+          switch (event.type) {
+            // Each graph node reports in as it starts, which is what drives
+            // the activity board (ROUTING -> SEARCHING -> RESPONDING).
+            case "status":
+              setSteps((prev) => {
+                const last = prev[prev.length - 1];
+                if (last && last.node === event.node) return prev;
+                return [
+                  ...prev,
+                  {
+                    id: ++stepIdRef.current,
+                    node: event.node,
+                    status: event.activity_status || "WORKING",
+                    label: event.label || "Working",
+                  },
+                ];
+              });
+              break;
+
+            // Tokens are appended to React state as they land, so the reply
+            // renders word by word instead of appearing all at once.
+            case "token":
+              if (!firstTokenSeen) {
+                firstTokenSeen = true;
+                setSteps([]);
+              }
+              assistantText += event.text;
+              setStreamingText(assistantText);
+              break;
+
+            case "done":
+              finalSessionId = event.session_id;
+              if (event.hotels?.length) resultKind = "hotel";
+              else if (event.flights?.length) resultKind = "flight";
+              break;
+
+            case "error":
+              erroredOut = true;
+              assistantText = event.message || "Something went wrong. Try again.";
+              break;
           }
-          assistantText += event.text;
-          break;
-        case "done":
-          finalSessionId = event.session_id;
-          finalHotels = event.hotels;
-          finalFlights = event.flights;
-          setStatusLabel("");
-          break;
-        case "error":
-          erroredOut = true;
-          assistantText = event.message || "Something went wrong. Please try again.";
-          setStatusLabel("");
-          break;
+        },
+        controller.signal
+      );
+
+      const aborted = controller.signal.aborted;
+      abortRef.current = null;
+
+      setStreamingText("");
+      setSteps([]);
+      setBusy(false);
+
+      if (aborted) {
+        // Keep whatever had already streamed in rather than throwing it away.
+        if (assistantText.trim()) {
+          appendMessage("assistant", assistantText + "\n\n_(stopped)_", finalSessionId, {
+            resultKind,
+          });
+        }
+        return;
       }
-    });
 
-    appendMessage("assistant", assistantText || "Something went wrong.", finalSessionId, {
-      isError: erroredOut,
-      hotels: finalHotels,
-      flights: finalFlights,
-    });
+      appendMessage(
+        "assistant",
+        assistantText || "I didn't get an answer back that time. Try again.",
+        finalSessionId,
+        { isError: erroredOut, resultKind }
+      );
+    },
+    [sessionId, appendMessage, busy]
+  );
 
-    setBusy(false);
+  function handleStop() {
+    abortRef.current?.abort();
   }
 
   function handleRetry() {
@@ -86,37 +149,41 @@ export default function App() {
   }
 
   function handleDeleteChat() {
-    if (!activeId && messages.length === 0) return;
+    if (!activeKey && messages.length === 0) return;
     if (window.confirm("Delete this conversation? This can't be undone.")) {
       deleteActiveConversation();
     }
   }
 
-  const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
+  const lastMessage = messages[messages.length - 1];
+  const showQuickReplies =
+    !busy && lastMessage?.role === "assistant" && !lastMessage.isError;
 
   return (
-    <div className="h-screen flex flex-col relative overflow-hidden bg-canvas">
-      {/* Background photo - heavily blurred and dark-overlaid so it reads
-          as an atmospheric backdrop, and so every message stays clearly
-          legible on top of it regardless of scroll position. */}
+    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-canvas">
+      {/* Atmospheric backdrop: blurred hard enough that it reads as light and
+          colour rather than a photo, so text stays legible over it in both themes. */}
       <div
-        className="absolute inset-0 bg-cover bg-center opacity-25 blur-2xl scale-110"
+        className="pointer-events-none absolute inset-0 scale-110 bg-cover bg-center opacity-[0.10] blur-3xl dark:opacity-[0.18]"
         style={{ backgroundImage: "url(/images/beach-bg.jpg)" }}
       />
-      <div className="absolute inset-0 bg-gradient-to-b from-canvas/80 via-canvas/90 to-canvas" />
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-canvas/60 via-canvas/85 to-canvas" />
 
-      <div className="relative z-10 flex flex-col h-full">
+      <div className="relative z-10 flex h-full flex-col">
         <Navbar
           onToggleHistory={() => setSidebarOpen((v) => !v)}
+          onNewChat={startNewConversation}
           onDeleteChat={handleDeleteChat}
           canDelete={messages.length > 0}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
 
         <HistorySidebar
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
           conversations={conversations}
-          activeId={activeId}
+          activeId={activeKey}
           onSelectConversation={(id) => {
             loadConversation(id);
             setSidebarOpen(false);
@@ -128,43 +195,43 @@ export default function App() {
           onDeleteConversation={deleteConversation}
         />
 
-        <main className="flex-1 flex flex-col max-w-3xl w-full mx-auto p-4 md:p-6 min-h-0">
-          {messages.length === 0 ? (
-            <Hero onSuggestionClick={handleSend} />
+        <main className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-3 pb-3 md:px-6 md:pb-5">
+          {messages.length === 0 && !busy ? (
+            <Hero onSuggestionClick={handleSend} disabled={busy} />
           ) : (
             <div
               ref={chatLogRef}
-              className="chat-scroll flex-1 overflow-y-auto flex flex-col gap-3 px-1 py-2"
+              className="chat-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-1 py-4"
             >
               {messages.map((m, i) => (
-                <div key={i} className="flex flex-col gap-2">
-                  <ChatMessage
-                    role={m.role}
-                    text={m.text}
-                    isError={m.isError}
-                    onRetry={m.isError && m === lastAssistantMsg ? handleRetry : undefined}
-                  />
-                  {m.role === "assistant" && <HotelCards hotels={m.hotels} />}
-                  {m.role === "assistant" && <FlightCards flights={m.flights} />}
-                </div>
+                <ChatMessage
+                  key={i}
+                  role={m.role}
+                  text={m.text}
+                  isError={m.isError}
+                  onRetry={m.isError && i === messages.length - 1 ? handleRetry : undefined}
+                />
               ))}
-              {lastAssistantMsg && lastAssistantMsg === messages[messages.length - 1] && (
+
+              {streamingText && <ChatMessage role="assistant" text={streamingText} streaming />}
+
+              {showQuickReplies && (
                 <QuickReplies
-                  hotels={lastAssistantMsg.hotels}
-                  flights={lastAssistantMsg.flights}
+                  resultKind={lastMessage.resultKind}
                   onReply={handleSend}
+                  disabled={busy}
                 />
               )}
             </div>
           )}
 
-          <StatusLine label={statusLabel} />
-          <div className="mt-1">
-            <ChatInput onSend={handleSend} disabled={busy} />
+          <div className="pt-1">
+            <ActivityBoard steps={steps} busy={busy} streaming={!!streamingText} />
+            <ChatInput onSend={handleSend} onStop={handleStop} busy={busy} />
+            <p className="mt-2.5 text-center text-[11px] text-muted/70">
+              TripWeaver can get details wrong. Check prices and dates before you book.
+            </p>
           </div>
-          <p className="text-center text-[11px] text-muted/60 mt-3">
-            TripWeaver AI may produce inaccurate information. Verify important details before booking.
-          </p>
         </main>
       </div>
     </div>

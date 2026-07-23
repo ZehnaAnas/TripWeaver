@@ -26,22 +26,18 @@ NODE_ACTIVITY_STATUS = {
     "router": "ROUTING",
     "hotel_node": "SEARCHING",
     "flight_node": "SEARCHING",
-    "weather_node": "SEARCHING",
-    "places_node": "SEARCHING",
-    "itinerary_node": "RESPONDING",
+    "activity_node": "SEARCHING",
     "unknown_node": "RESPONDING",
-    "generate_response": "RESPONDING",
+    "finalize_answer": "RESPONDING",
 }
 
 NODE_LABELS = {
     "router": "Understanding your request...",
     "hotel_node": "Working on your hotel request...",
     "flight_node": "Working on your flight request...",
-    "weather_node": "Checking the weather...",
-    "places_node": "Finding things to do...",
-    "itinerary_node": "Putting your itinerary together...",
+    "activity_node": "Finding things to do...",
     "unknown_node": "Thinking...",
-    "generate_response": "Composing a response...",
+    "finalize_answer": "Composing a response...",
 }
 
 

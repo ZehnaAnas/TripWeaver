@@ -1,90 +1,76 @@
-import { useState, useRef, useEffect } from "react";
+import Logo from "./Logo";
 
-function IconButton({ onClick, label, children, danger }) {
+function IconButton({ onClick, label, children, tone = "default", disabled }) {
+  const tones = {
+    default: "text-muted hover:text-ink hover:border-accent/50",
+    danger: "text-muted hover:text-error hover:border-error/50",
+  };
   return (
     <button
       onClick={onClick}
       aria-label={label}
       title={label}
-      className={`w-10 h-10 rounded-full flex items-center justify-center border transition-colors ${
-        danger
-          ? "border-border-subtle bg-panel text-muted hover:text-error hover:border-error/50"
-          : "border-border-subtle bg-panel text-muted hover:text-ink hover:border-accent/50"
-      }`}
+      disabled={disabled}
+      className={`flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface transition-colors disabled:opacity-35 disabled:hover:border-line disabled:hover:text-muted ${tones[tone]}`}
     >
       {children}
     </button>
   );
 }
 
-export default function Navbar({ onToggleHistory, onDeleteChat, canDelete }) {
-  const [profileOpen, setProfileOpen] = useState(false);
-  const menuRef = useRef(null);
-
-  useEffect(() => {
-    function handleClickOutside(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setProfileOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+export default function Navbar({
+  onToggleHistory,
+  onNewChat,
+  onDeleteChat,
+  canDelete,
+  theme,
+  onToggleTheme,
+}) {
+  const isDark = theme === "dark";
 
   return (
-    <header className="flex items-center justify-between px-6 py-4 relative z-30">
-      <div className="flex items-center gap-2">
-        <span className="font-display text-lg tracking-wide text-ink">TripWeaver</span>
-        <span className="text-[10px] uppercase tracking-widest bg-accent/15 text-accent-soft border border-accent/30 rounded-full px-2 py-0.5">
-          AI
-        </span>
-      </div>
+    <header className="relative z-30 flex items-center justify-between border-b border-line/70 px-4 py-3 md:px-6">
+      <Logo />
 
-      <div className="flex items-center gap-2.5">
-        <IconButton onClick={onDeleteChat} label="Delete this chat" danger={canDelete}>
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none">
-            <path
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-8 0 1 13a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2l1-13"
-            />
+      <div className="flex items-center gap-2">
+        <IconButton onClick={onNewChat} label="New chat">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true">
+            <path stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" d="M12 5v14M5 12h14" />
           </svg>
         </IconButton>
 
         <IconButton onClick={onToggleHistory} label="Chat history">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
-            <path
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M21 11.5a8.5 8.5 0 1 1-3.5-6.86M21 4v5h-5"
-            />
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true">
+            <path stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" d="M21 11.5a8.5 8.5 0 1 1-3.5-6.86M21 4v5h-5M12 8v4.5l3 1.8" />
           </svg>
         </IconButton>
 
-        <div className="relative" ref={menuRef}>
-          <button
-            onClick={() => setProfileOpen((v) => !v)}
-            aria-label="Profile"
-            className="w-10 h-10 rounded-full bg-gradient-to-br from-accent to-accent-soft text-canvas font-semibold text-sm flex items-center justify-center"
-          >
-            G
-          </button>
-
-          {profileOpen && (
-            <div className="absolute right-0 mt-2 w-48 bg-panel border border-border-subtle rounded-xl shadow-xl overflow-hidden animate-fade-in">
-              <button className="w-full text-left px-4 py-3 text-sm text-ink hover:bg-panel-alt transition-colors">
-                Sign in
-              </button>
-              <button className="w-full text-left px-4 py-3 text-sm text-muted hover:bg-panel-alt transition-colors border-t border-border-subtle">
-                Settings
-              </button>
-            </div>
+        <IconButton
+          onClick={onToggleTheme}
+          label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {isDark ? (
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.7" />
+              <path stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true">
+              <path stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2Z" />
+            </svg>
           )}
-        </div>
+        </IconButton>
+
+        <IconButton
+          onClick={onDeleteChat}
+          label="Delete this chat"
+          tone="danger"
+          disabled={!canDelete}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+            <path stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-8 0 1 13a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2l1-13" />
+          </svg>
+        </IconButton>
       </div>
     </header>
   );

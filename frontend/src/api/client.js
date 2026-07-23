@@ -10,33 +10,48 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-// Streaming chat deliberately uses the native fetch() API rather than
-// axios - browsers don't expose a reliable way to read a streaming
-// response body incrementally through axios's adapters, while
-// fetch()'s response.body.getReader() is the standard, correct tool
-// for this. Axios (via the `api` instance above) is used for every
-// other, non-streaming request in this app.
-export async function streamChat(message, sessionId, onEvent) {
+// Every message the user could ever see about a failure lives here, in the
+// interface's own voice. Raw exceptions and stack traces never reach the UI.
+const ERRORS = {
+  unreachable:
+    "I can't reach the travel assistant right now. Check that the backend is running at " +
+    API_BASE_URL +
+    ", then try again.",
+  badResponse:
+    "The travel assistant answered, but not with something I could read. Give it another try in a moment.",
+  interrupted: "The connection dropped part-way through that answer. Try again.",
+};
+
+/**
+ * Streaming chat deliberately uses the native fetch() API rather than axios -
+ * browsers don't expose a reliable way to read a streaming response body
+ * incrementally through axios's adapters, while fetch()'s
+ * response.body.getReader() is the standard tool for this. Axios (via the
+ * `api` instance above) is used for every other, non-streaming request.
+ *
+ * The backend speaks Server-Sent Events, so the reader buffers raw bytes and
+ * splits on the blank-line delimiter - a single network chunk can carry half
+ * an event or three whole ones.
+ *
+ * `signal` lets the caller abort mid-answer (the Stop button).
+ */
+export async function streamChat(message, sessionId, onEvent, signal) {
   let response;
   try {
     response = await fetch(`${API_BASE_URL}/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, session_id: sessionId }),
+      signal,
     });
-  } catch {
-    onEvent({
-      type: "error",
-      message: "I couldn't reach the travel assistant. Make sure the backend is running and reachable.",
-    });
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+    onEvent({ type: "error", message: ERRORS.unreachable });
     return;
   }
 
   if (!response.ok || !response.body) {
-    onEvent({
-      type: "error",
-      message: "I couldn't reach the travel assistant. Please try again in a moment.",
-    });
+    onEvent({ type: "error", message: ERRORS.badResponse });
     return;
   }
 
@@ -44,18 +59,21 @@ export async function streamChat(message, sessionId, onEvent) {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
+  for (;;) {
     let readResult;
     try {
       readResult = await reader.read();
-    } catch {
-      onEvent({ type: "error", message: "The connection was interrupted. Please try again." });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      onEvent({ type: "error", message: ERRORS.interrupted });
       return;
     }
+
     const { value, done } = readResult;
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
+
     let boundary;
     while ((boundary = buffer.indexOf("\n\n")) !== -1) {
       const rawEvent = buffer.slice(0, boundary);
@@ -64,7 +82,7 @@ export async function streamChat(message, sessionId, onEvent) {
       try {
         onEvent(JSON.parse(rawEvent.slice("data: ".length)));
       } catch {
-        // malformed event - skip rather than crash the stream
+        // A malformed event is skipped rather than killing the stream.
       }
     }
   }

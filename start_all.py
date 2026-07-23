@@ -6,8 +6,7 @@ import os
 services = [
     ("Hotel Service", "mcp_servers/hotel_server.py"),
     ("Flight Service", "mcp_servers/flight_server.py"),
-    ("Place Service", "mcp_servers/place_server.py"),
-    ("Weather Service", "mcp_servers/weather_server.py"),
+    ("Activity Service", "mcp_servers/activity_server.py"),
     ("FastAPI Backend", "main.py"),
 ]
 
