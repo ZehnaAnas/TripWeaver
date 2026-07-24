@@ -232,7 +232,7 @@ Results come back as a formatted list. Follow-ups keep their context, so
 The agent asks only for what it doesn't already have — check-in, check-out,
 guest name, email, room type. Answer in one line if you like:
 
-> 2026-05-04,2026-05-06,Zehna,zehna@example.com,single
+> 2026-05-04,2026-05-06,john,john@example.com,single
 
 It books immediately and replies with the confirmation reference. There is no
 separate "are you sure?" step; supplying the details is the confirmation.
