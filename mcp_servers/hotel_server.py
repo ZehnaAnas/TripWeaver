@@ -4,8 +4,9 @@ from typing import Optional
 import json
 import urllib.request
 import urllib.error
+import os
 
-mcp = FastMCP("Hotel Service", port=8001)
+mcp = FastMCP("Hotel Service", port=int(os.getenv("HOTEL_MCP_PORT", "8001")))
 
 BASE_URL = "https://standing-fish-574.convex.site"
 

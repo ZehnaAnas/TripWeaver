@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-mcp = FastMCP("Activity Service", port=8003)
+mcp = FastMCP("Activity Service", port=int(os.getenv("ACTIVITY_MCP_PORT", "8003")))
 
 TAVILY_URL = "https://api.tavily.com/search"
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
