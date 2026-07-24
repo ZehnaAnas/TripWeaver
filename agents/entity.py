@@ -1,69 +1,42 @@
-from typing import List, Optional, TypedDict
+from typing import Annotated, List, Optional, TypedDict
+from langgraph.graph.message import add_messages
+from langchain_core.messages import AnyMessage
 
-class GraphState(TypedDict):
-    messages: List[str]
 
+class GraphState(TypedDict, total=False):
+    messages: Annotated[List[AnyMessage], add_messages]
+
+    # Conversation/session
+    session_id: Optional[str]
+
+    # Routing
     intent: str
-    sub_action: str
+    sub_action :Optional[str]
 
-    activity_status:str
-    tool_status:str
+    # Final response
+    response_text: str
 
-    city: Optional[str]
-    city_code: Optional[str]
-    check_in: Optional[str]
-    check_out: Optional[str]
+    # UI status
+    activity_status: str
 
-    origin: Optional[str]
-    destination: Optional[str]
-    flight_date: Optional[str]
+    # Search results
+    hotel_results: List[dict]
+    flight_results: List[dict]
+    activity_results: List[dict]
 
-    passenger_email:Optional[str]
-    passenger_name:Optional[str]
-    booking_confirmed:bool
+    # Currently selected item for booking
+    selected_hotel:Optional[dict]
+    selected_flight:Optional[dict]
 
-    flying_type:Optional[str]
-    date_of_birth:Optional[str]
-    passport_number:Optional[str]
-
-    nationality:Optional[str]
-    guest_name:Optional[str]
-    guest_email:Optional[str]
-    airline:Optional[str]
-
-    room_type:Optional[str]
-    hotel_id:Optional[str]
-    flight_id:Optional[str]
-    star_rating:Optional[int]
-
-    hotel_budget:Optional[int] 
-    flight_budget:Optional[int] 
-    origin_country:Optional[str] 
-
-    destination_country:Optional[str] 
-    hotel_name: Optional[str]
-
-    hotel_search_cache: List[dict]
-    flight_search_cache : List[dict]
-
-    hotel_results : List[dict]
-    flight_results : List[dict]
-    response_text : str
-
-    last_intent : Optional[str]
-    budget_adjustment:Optional[str]
-    weather_date : Optional[str]
-
-    weather_results:List[dict]
-    activity_type : Optional[str]
-    activity_results : List[dict]
-
-    transport_from : Optional[str]
-    transport_to : Optional[str]
-    transport_node : Optional[str]
-    transport_results : List[dict]
-
-
-   
-
+    # Type of pending action
+    pending_action: Optional[str]
     
+    # Indicates that the system is waiting for user confirmation
+    awaiting_confirmation: bool
+
+    # Booking details
+    booking_details:Optional[dict]
+
+    # Last booking result
+    last_confirmation:Optional[dict]
+
