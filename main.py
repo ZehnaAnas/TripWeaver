@@ -10,7 +10,7 @@ import re
 import os
 from entity import ChatRequest, ChatResponse, ResetRequest
 from agents.graph import graph
-
+import traceback
 
 app = FastAPI()
 
@@ -85,6 +85,7 @@ async def chat_stream(request: ChatRequest):
     config = {"configurable": {"thread_id": session_id}}
 
     async def event_generator():
+        yield _sse({"type": "start", "session_id": session_id})
         accumulated_state = {}
         try:
             async for chunk in graph.astream(
@@ -95,6 +96,29 @@ async def chat_stream(request: ChatRequest):
                 for node_name, partial_update in chunk.items():
                     accumulated_state.update(partial_update)
                     yield _sse(_node_status_event(node_name))
+            response_text = accumulated_state.get("response_text") or "Something went wrong."
+            MAX_DELAYED_CHARS = 800
+            TOKEN_DELAY_SECONDS = 0.015
+            chars_sent = 0
+            pieces = re.split(r"(\s+)", response_text)
+            for i, piece in enumerate(pieces):
+                if piece == "":
+                        continue
+                if chars_sent < MAX_DELAYED_CHARS:
+                        yield _sse({"type": "token", "text": piece})
+                        chars_sent += len(piece)
+                        await asyncio.sleep(TOKEN_DELAY_SECONDS)
+                else:
+                    remainder = "".join(pieces[i:])
+                    if remainder:
+                        yield _sse({"type": "token", "text": remainder})
+                    break
+                yield _sse({
+                    "type": "done",
+                    "session_id": session_id,
+                    "hotels": accumulated_state.get("hotel_results") or None,
+                    "flights": accumulated_state.get("flight_results") or None,
+                    })
         except Exception as e:
             yield _sse({
                 "type": "error",
@@ -102,33 +126,6 @@ async def chat_stream(request: ChatRequest):
             })
             print(f"[chat_stream] graph error: {e}")
             return
-
-        response_text = accumulated_state.get("response_text") or "Something went wrong."
-
-        MAX_DELAYED_CHARS = 800
-        TOKEN_DELAY_SECONDS = 0.015
-
-        chars_sent = 0
-        pieces = re.split(r"(\s+)", response_text)
-        for i, piece in enumerate(pieces):
-            if piece == "":
-                continue
-            if chars_sent < MAX_DELAYED_CHARS:
-                yield _sse({"type": "token", "text": piece})
-                chars_sent += len(piece)
-                await asyncio.sleep(TOKEN_DELAY_SECONDS)
-            else:
-                remainder = "".join(pieces[i:])
-                if remainder:
-                    yield _sse({"type": "token", "text": remainder})
-                break
-
-        yield _sse({
-            "type": "done",
-            "session_id": session_id,
-            "hotels": accumulated_state.get("hotel_results") or None,
-            "flights": accumulated_state.get("flight_results") or None,
-        })
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

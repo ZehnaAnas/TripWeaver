@@ -11,6 +11,7 @@ class GraphState(TypedDict, total=False):
 
     # Routing
     intent: str
+    sub_action :Optional[str]
 
     # Final response
     response_text: str

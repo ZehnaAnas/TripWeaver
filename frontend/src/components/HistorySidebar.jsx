@@ -57,15 +57,15 @@ export default function HistorySidebar({
           ) : (
             conversations.map((c) => (
               <div
-                key={c.id ?? c.timestamp}
+                key={c.key}
                 className={`group flex items-center gap-1 rounded-lg pr-1 transition-colors ${
-                  c.id === activeId ? "bg-surface-2" : "hover:bg-surface-2/60"
+                  c.key === activeId ? "bg-surface-2" : "hover:bg-surface-2/60"
                 }`}
               >
                 <button
-                  onClick={() => onSelectConversation(c.id)}
+                  onClick={() => onSelectConversation(c.key)}
                   className={`flex-1 truncate px-3 py-2.5 text-left text-[13.5px] ${
-                    c.id === activeId ? "font-medium text-ink" : "text-muted"
+                    c.key === activeId ? "font-medium text-ink" : "text-muted"
                   }`}
                 >
                   {c.title || "New chat"}
@@ -73,7 +73,7 @@ export default function HistorySidebar({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDeleteConversation(c.id);
+                    onDeleteConversation(c.key);
                   }}
                   aria-label={`Delete conversation: ${c.title || "New chat"}`}
                   className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-muted opacity-0 transition-all hover:bg-error/10 hover:text-error focus-visible:opacity-100 group-hover:opacity-100 max-md:opacity-100"

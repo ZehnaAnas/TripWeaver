@@ -8,6 +8,24 @@ mcp = FastMCP("Flight Service", port=8002)
 
 BASE_URL = "https://standing-fish-574.convex.site"
 
+CITY_TO_AIRPORT = {
+    "bali": "DPS", "denpasar": "DPS", "bangkok": "BKK", "beijing": "PEK",
+    "busan": "PUS", "cebu": "CEB", "delhi": "DEL", "new delhi": "DEL",
+    "guangzhou": "CAN", "hanoi": "HAN", "ho chi minh city": "SGN",
+    "saigon": "SGN", "jakarta": "CGK", "kuala lumpur": "KUL", "kl": "KUL",
+    "manila": "MNL", "mumbai": "BOM", "osaka": "KIX", "penang": "PEN",
+    "phuket": "HKT", "seoul": "ICN", "shanghai": "PVG", "singapore": "SIN",
+    "tokyo": "NRT",
+}
+
+def _resolve_airport(place: Optional[str]) -> Optional[str]:
+    """The flights API filters on airport code, so a city name matches nothing."""
+    if not place:
+        return None
+    cleaned = place.strip()
+    if len(cleaned) == 3 and cleaned.isalpha():
+        return cleaned.upper()
+    return CITY_TO_AIRPORT.get(cleaned.lower(), cleaned)
 
 def _get_json(url: str):
     try:
@@ -94,10 +112,7 @@ def search_flights(
 
     date is optional
     """
-    
-    normalized_origin = origin.upper() if origin and len(origin) == 3 and origin.isalpha() else origin
-    normalized_destination = destination.upper() if destination and len(destination) == 3 and destination.isalpha() else destination
-    params = {"origin": normalized_origin, "destination": normalized_destination}
+    params = {"origin": _resolve_airport(origin), "destination": _resolve_airport(destination)}
     if flight_date:
         params["date"] = flight_date
 
@@ -123,8 +138,8 @@ def book_flight(
     """
     payload = {
         "flightId": flight_id,
-        "passengerNames": passenger_name,
-        "passengerEmails": passenger_email,
+        "passengerName": passenger_name,
+        "passengerEmail": passenger_email,
     }
     url = f"{BASE_URL}/flights/book"
     result = _post_json(url, payload)

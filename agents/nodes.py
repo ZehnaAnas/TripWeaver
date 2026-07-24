@@ -5,7 +5,7 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 from langchain.agents import create_agent
 import json
 import traceback
-from .mcp_client import mcp_client
+from .mcp_client import get_tools
 from .llm import llm
 from .prompts import (
     SYSTEM_PROMPT,
@@ -98,32 +98,53 @@ def _last_ai_text(result_messages) -> str:
     final = result_messages[-1] if result_messages else None
     return getattr(final, "content", "") or "I'm not sure how to help with that."
 
+def _unwrap_text_block(block):
+    """Turn one {"type":"text","text":"<json>"} envelope into real data."""
+    if isinstance(block, dict) and block.get("type") == "text":
+        try:
+            return json.loads(block["text"])
+        except (TypeError, json.JSONDecodeError, KeyError):
+            return block
+    return block
 
 def _parse_agent_tool_content(raw_content):
-    try:
-        parsed = json.loads(raw_content)
-    except (TypeError, json.JSONDecodeError):
-        return raw_content
-    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict) and parsed[0].get("type") == "text":
+    if isinstance(raw_content, str):
         try:
-            return json.loads(parsed[0]["text"])
-        except (TypeError, json.JSONDecodeError, KeyError):
-            return parsed
-    return parsed
+            raw_content = json.loads(raw_content)
+        except json.JSONDecodeError:
+            return raw_content
+
+    if isinstance(raw_content, list):
+        unwrapped = [_unwrap_text_block(b) for b in raw_content]
+        return unwrapped[0] if len(unwrapped) == 1 else unwrapped
+
+    return _unwrap_text_block(raw_content)
+
+def _extract_booking(result):
+    candidate = result[0] if isinstance(result, list) and len(result) == 1 else result
+    if not isinstance(candidate, dict):
+        return None
+
+    booking = candidate.get("booking")
+    if isinstance(booking, dict) and (booking.get("bookingReference") or booking.get("bookingId")):
+        return booking
+
+    if candidate.get("bookingReference") or candidate.get("confirmationId"):
+        return candidate
+
+    return None
 
 async def hotel_node(state: GraphState) -> dict:
     try:
-        async with mcp_client.session("hotel") as session:
-            hotel_tools = await load_mcp_tools(session)
-
-            booking_agent = create_agent(
-                model=llm,
-                tools=hotel_tools,
-                system_prompt=HOTEL_NODE_PROMPT,
-            )
-            previous_hotels = state.get("hotel_results") or []
-            selected_hotel = state.get("selected_hotel")
-            agent_context = f"""
+        hotel_tools = await get_tools("hotel")
+        booking_agent = create_agent(
+            model=llm,
+            tools=hotel_tools,
+            system_prompt=HOTEL_NODE_PROMPT,
+        )
+        previous_hotels = state.get("hotel_results") or []
+        selected_hotel = state.get("selected_hotel")
+        agent_context = f"""
             CURRENT TRIPWEAVER STATE
 
             Latest hotel results:
@@ -137,42 +158,42 @@ async def hotel_node(state: GraphState) -> dict:
             Booking details:
             {json.dumps(state.get("booking_details"),indent=2,default=str)}
             """
-            agent_messages = [
-                SystemMessage(content=agent_context),
-                *list(state["messages"])[-10:],
-            ]
-            agent_result = await booking_agent.ainvoke({"messages":agent_messages})
-            result_messages = agent_result.get("messages", [])
+        agent_messages = [
+            SystemMessage(content=agent_context),
+            *list(state["messages"])[-10:],
+        ]
+        agent_result = await booking_agent.ainvoke({"messages":agent_messages})
+        result_messages = agent_result.get("messages", [])
 
-            tool_messages = [m for m in result_messages if type(m).__name__ == "ToolMessage"]
-            last_tool_message = tool_messages[-1] if tool_messages else None
-            llm_text = _last_ai_text(result_messages)
+        tool_messages = [m for m in result_messages if type(m).__name__ == "ToolMessage"]
+        last_tool_message = tool_messages[-1] if tool_messages else None
+        llm_text = _last_ai_text(result_messages)
 
-            if last_tool_message is None:
-                return {"response_text": llm_text}
+        if last_tool_message is None:
+            return {"response_text": llm_text}
 
-            result = _parse_agent_tool_content(last_tool_message.content)
-            error_message = _extract_mcp_error(result)
-            if error_message:
-                return {
-                    "hotel_results": [],
-                    "response_text": llm_text or f"I couldn't complete that request — {error_message}",
-                }
+        result = _parse_agent_tool_content(last_tool_message.content)
+        error_message = _extract_mcp_error(result)
+        if error_message:
+            return {
+                "hotel_results": [],
+                "response_text": llm_text or f"I couldn't complete that request — {error_message}",
+            }
 
-            confirmation = result[0] if isinstance(result, list) and len(result) == 1 else result
-            if isinstance(confirmation, dict) and confirmation.get("confirmationId"):
-                return {
-                    "hotel_results": [],
-                    "last_confirmation": confirmation,
-                    "pending_action":None,
-                    "awaiting_confirmation":False,
-                    "response_text": llm_text,
-                }
+        confirmation = _extract_booking(result)
+        if confirmation:
+            return {
+                "hotel_results": [],
+                "last_confirmation": confirmation,
+                "pending_action":None,
+                "awaiting_confirmation":False,
+                "response_text": llm_text,
+            }
 
-            if isinstance(result, list):
-                return {"hotel_results": result, "response_text": llm_text}
+        if isinstance(result, list):
+            return {"hotel_results": result, "response_text": llm_text}
 
-            return { "response_text": llm_text}
+        return { "response_text": llm_text}
 
     except Exception:
         traceback.print_exc()
@@ -180,61 +201,59 @@ async def hotel_node(state: GraphState) -> dict:
 
 async def flight_node(state: GraphState) -> dict:
     try:
-        async with mcp_client.session("flight") as session:
-            flight_tools = await load_mcp_tools(session)
+        flight_tools = await get_tools("flight")
+        booking_agent = create_agent(
+            model=llm,
+            tools=flight_tools,
+            system_prompt=FLIGHT_NODE_PROMPT,
+        )
+        agent_context = f"""
+        CURRENT TRIPWEAVER STATE
 
-            booking_agent = create_agent(
-                model=llm,
-                tools=flight_tools,
-                system_prompt=FLIGHT_NODE_PROMPT,
-            )
-            agent_context = f"""
-            CURRENT TRIPWEAVER STATE
+        Latest flight results:
+        {json.dumps(state.get("flight_results") or [], indent=2,default=str)}
+        Selected flight:
+        {json.dumps(state.get("selected_flight"),indent=2,default=str)}
+        Pending action:
+        {state.get("pending_action")}
+        Awaiting confirmation:
+        {state.get("awaiting_confirmation")}
+        Booking details:
+        {json.dumps(state.get("booking_details"),indent=2,default=str)}
+        """
+        agent_result = await booking_agent.ainvoke({"messages":[
+        SystemMessage(content=agent_context),
+        *list(state["messages"])[-10:],
+        ]})
+        result_messages = agent_result.get("messages", [])
 
-            Latest flight results:
-            {json.dumps(state.get("flight_results") or [], indent=2,default=str)}
-            Selected flight:
-            {json.dumps(state.get("selected_flight"),indent=2,default=str)}
-            Pending action:
-            {state.get("pending_action")}
-            Awaiting confirmation:
-            {state.get("awaiting_confirmation")}
-            Booking details:
-            {json.dumps(state.get("booking_details"),indent=2,default=str)}
-            """
-            agent_result = await booking_agent.ainvoke({"messages":[
-                SystemMessage(content=agent_context),
-                *list(state["messages"])[-10:],
-                ]})
-            result_messages = agent_result.get("messages", [])
+        tool_messages = [m for m in result_messages if type(m).__name__ == "ToolMessage"]
+        last_tool_message = tool_messages[-1] if tool_messages else None
+        llm_text = _last_ai_text(result_messages)
 
-            tool_messages = [m for m in result_messages if type(m).__name__ == "ToolMessage"]
-            last_tool_message = tool_messages[-1] if tool_messages else None
-            llm_text = _last_ai_text(result_messages)
+        if last_tool_message is None:
+            return {"response_text": llm_text}
 
-            if last_tool_message is None:
-                return {"response_text": llm_text}
+        result = _parse_agent_tool_content(last_tool_message.content)
+        error_message = _extract_mcp_error(result)
+        if error_message:
+            return {
+                "flight_results": [],
+                "response_text": llm_text or f"I couldn't complete that request — {error_message}",
+            }
 
-            result = _parse_agent_tool_content(last_tool_message.content)
-            error_message = _extract_mcp_error(result)
-            if error_message:
-                return {
-                    "flight_results": [],
-                    "response_text": llm_text or f"I couldn't complete that request — {error_message}",
+        confirmation = _extract_booking(result)
+        if confirmation:
+            return {
+                "flight_results": [],
+                "last_confirmation": confirmation,
+                "response_text": llm_text,
                 }
 
-            confirmation = (result[0] if isinstance(result, list) and len(result) == 1 else result)
-            if isinstance(confirmation, dict) and confirmation.get("confirmationId"):
-                            return {
-                                "flight_results": [],
-                                "last_confirmation": confirmation,
-                                "response_text": llm_text,
-                            }
+        if isinstance(result, list):
+            return {"flight_results": result, "response_text": llm_text}
 
-            if isinstance(result, list):
-                return {"flight_results": result, "response_text": llm_text}
-
-            return {"flight_results": [], "response_text": llm_text}
+        return {"response_text": llm_text}
 
     except Exception:
         traceback.print_exc()
@@ -243,25 +262,24 @@ async def flight_node(state: GraphState) -> dict:
 
 async def activity_node(state: GraphState) -> dict:
     try:
-        async with mcp_client.session("activities") as session:
-            activity_tools = await load_mcp_tools(session)
-            activity_agent = create_agent(model=llm, tools=activity_tools, system_prompt=ACTIVITY_NODE_PROMPT)
+        activity_tools = await get_tools("activities")
+        activity_agent = create_agent(model=llm, tools=activity_tools, system_prompt=ACTIVITY_NODE_PROMPT)
 
-            agent_result = await activity_agent.ainvoke({"messages": list(state["messages"])})
-            result_messages = agent_result.get("messages", [])
-            tool_messages = [m for m in result_messages if type(m).__name__ == "ToolMessage"]
-            llm_text = _last_ai_text(result_messages)
+        agent_result = await activity_agent.ainvoke({"messages": list(state["messages"])})
+        result_messages = agent_result.get("messages", [])
+        tool_messages = [m for m in result_messages if type(m).__name__ == "ToolMessage"]
+        llm_text = _last_ai_text(result_messages)
 
-            if not tool_messages:
-                return {"response_text": llm_text}
+        if not tool_messages:
+            return {"response_text": llm_text}
 
-            result = _parse_agent_tool_content(tool_messages[-1].content)
-            error_message = _extract_mcp_error(result)
-            if error_message:
-                return {"activity_results": [], "response_text": llm_text or f"I couldn't find activities - {error_message}"}
+        result = _parse_agent_tool_content(tool_messages[-1].content)
+        error_message = _extract_mcp_error(result)
+        if error_message:
+            return {"activity_results": [], "response_text": llm_text or f"I couldn't find activities - {error_message}"}
 
-            activities = result if isinstance(result, list) else []
-            return {"activity_results": activities, "response_text": llm_text}
+        activities = result if isinstance(result, list) else []
+        return {"activity_results": activities, "response_text": llm_text}
     except Exception:
         traceback.print_exc()
         return {"activity_results": [], "response_text": "The activities service is currently unavailable. Please try again shortly."}
@@ -278,7 +296,8 @@ def unknown_node(state: GraphState) -> dict:
 def finalize_answer(state: GraphState) -> dict:
     draft = state.get("response_text")
     if not draft:
-        return {"response_text": "I'm not sure how to help with that. Could you rephrase?"}
+        fallback = "I'm not sure how to help with that. Could you rephrase?"
+        return {"response_text": fallback, "messages": [AIMessage(content=fallback)]}
 
     try:
         messages = [
@@ -286,12 +305,15 @@ def finalize_answer(state: GraphState) -> dict:
             HumanMessage(content=draft),
         ]
         response = llm.invoke(messages)
+        final_text = response.content
         return {
-            "response_text":response.content
+            "response_text": final_text,
+            "messages": [AIMessage(content=final_text)],
         }
     except Exception as e:
         print(f"[finalize_answer] Failed:{e}")
         traceback.print_exc()
         return{
-            "response_text":draft
+            "response_text":draft,
+            "messages":[AIMessage(content=draft)]
         }

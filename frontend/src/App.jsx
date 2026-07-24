@@ -89,6 +89,9 @@ export default function App() {
 
             // Tokens are appended to React state as they land, so the reply
             // renders word by word instead of appearing all at once.
+            case "start":
+              finalSessionId = event.session_id;
+              break;
             case "token":
               if (!firstTokenSeen) {
                 firstTokenSeen = true;
