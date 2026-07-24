@@ -203,8 +203,8 @@ redeploy, not just a restart.
 
 **Live URLs**
 
-- Frontend: <your-vercel-url>
-- Backend: <your-render-url>
+- Frontend: https://trip-weaver-vert.vercel.app/
+- Backend: https://tripweaver-ji1q.onrender.com
 
 **Deployment checklist**
 
